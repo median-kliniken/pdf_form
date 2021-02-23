@@ -1,8 +1,8 @@
 mod utils;
 
-use lopdf::dictionary;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
+use lopdf::dictionary;
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
 use std::collections::VecDeque;
 use std::io;
@@ -58,7 +58,19 @@ pub enum ValueError {
     TooManySelected,
     /// Readonly field cannot be edited
     Readonly,
+    /// A provided combobox value was not a valid choice
+    UnknownOption,
 }
+
+#[derive(Debug)]
+pub struct SingleCheckboxState {
+    pub widget_id: ObjectId,
+    pub on_value: String,
+    pub is_checked: bool,
+    pub readonly: bool,
+    pub required: bool,
+}
+
 /// The current state of a form field
 #[derive(Debug)]
 pub enum FieldState {
@@ -71,6 +83,8 @@ pub enum FieldState {
         readonly: bool,
         required: bool,
     },
+    /// A group of check boxes
+    CheckBoxGroup { states: Vec<SingleCheckboxState> },
     /// The toggle state of the checkbox
     CheckBox {
         is_checked: bool,
@@ -267,15 +281,9 @@ impl Form {
     /// # Panics
     /// This function will panic if the index is greater than the number of fields
     pub fn get_state(&self, n: usize) -> FieldState {
-        let object = self
-            .doc
-            .objects
-            .get(&self.form_ids[n])
-            .unwrap();
+        let object = self.doc.objects.get(&self.form_ids[n]).unwrap();
 
-        let field = object
-            .as_dict()
-            .unwrap();
+        let field = object.as_dict().unwrap();
         match self.get_type(n) {
             FieldType::Button => FieldState::Button,
             FieldType::Radio => FieldState::Radio {
@@ -290,17 +298,60 @@ impl Form {
                 readonly: is_read_only(field),
                 required: is_required(field),
             },
-            FieldType::CheckBox => FieldState::CheckBox {
-                is_checked: match field.get(b"V") {
-                    Ok(name) => name.as_name().unwrap() == b"Yes",
-                    _ => match field.get(b"AS") {
-                        Ok(name) => name.as_name().unwrap() == b"Yes",
-                        _ => false,
-                    },
-                },
-                readonly: is_read_only(field),
-                required: is_required(field),
-            },
+            FieldType::CheckBox => {
+                if let Ok(kids) = field.get(b"Kids").and_then(|o| o.as_array()) {
+                    // Grouped checkboxes
+                    let mut checkboxes = Vec::new();
+
+                    for kid_ref in kids {
+                        if let Ok(kid_id) = kid_ref.as_reference() {
+                            if let Ok(widget_obj) = self.doc.get_object(kid_id) {
+                                if let Ok(widget) = widget_obj.as_dict() {
+                                    if let Ok(ap) = widget.get(b"AP").and_then(|o| o.as_dict()) {
+                                        if let Ok(n_dict) = ap.get(b"N").and_then(|o| o.as_dict()) {
+                                            for (name, _) in n_dict.iter() {
+                                                if name != b"Off" {
+                                                    let is_checked = widget
+                                                        .get(b"AS")
+                                                        .ok()
+                                                        .and_then(|v| v.as_name().ok())
+                                                        .map(|n| n == name)
+                                                        .unwrap_or(false);
+                                                    checkboxes.push(SingleCheckboxState {
+                                                        widget_id: kid_id,
+                                                        on_value: String::from_utf8_lossy(name)
+                                                            .into(),
+                                                        is_checked,
+                                                        readonly: is_read_only(widget),
+                                                        required: is_required(widget),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    FieldState::CheckBoxGroup { states: checkboxes }
+                } else {
+                    // Simple checkbox
+                    let is_checked = match field.get(b"V") {
+                        Ok(name) => matches!(name.as_name().unwrap_or(b""), b"Yes" | b"On"),
+                        _ => match field.get(b"AS") {
+                            Ok(name) => matches!(name.as_name().unwrap_or(b""), b"Yes" | b"On"),
+                            _ => false,
+                        },
+                    };
+
+                    FieldState::CheckBox {
+                        is_checked,
+                        readonly: is_read_only(field),
+                        required: is_required(field),
+                    }
+                }
+            }
             FieldType::ListBox => {
                 FieldState::ListBox {
                     // V field in a list box can be either text for one option, an array for many
@@ -340,7 +391,7 @@ impl Form {
                             .filter(|x| !x.is_empty())
                             .collect(),
                         Some(_) => Vec::new(),
-                        None => Vec::new()
+                        None => Vec::new(),
                     },
                     multiselect: {
                         let flags = ChoiceFlags::from_bits_truncate(get_field_flags(field));
@@ -377,9 +428,7 @@ impl Form {
                     Some(&Object::Array(ref options)) => options
                         .iter()
                         .map(|x| match *x {
-                            Object::String(..) => {
-                                decode_pdf_string(x).unwrap_or_else(String::new)
-                            }
+                            Object::String(..) => decode_pdf_string(x).unwrap_or_else(String::new),
                             Object::Array(ref arr) => {
                                 if let Object::String(..) = &arr[1] {
                                     decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
@@ -404,9 +453,7 @@ impl Form {
             },
             FieldType::Text => FieldState::Text {
                 text: match field.get(b"V") {
-                    Ok(object) => {
-                        decode_pdf_string(object).unwrap_or_else(String::new)
-                    }
+                    Ok(object) => decode_pdf_string(object).unwrap_or_else(String::new),
                     _ => "".to_owned(),
                 },
                 readonly: is_read_only(field),
@@ -416,10 +463,7 @@ impl Form {
         }
     }
 
-    fn find_opt_in_kids_or_parents<'a>(
-        &'a self,
-        field: &'a Dictionary,
-    ) -> Option<&'a Object> {
+    fn find_opt_in_kids_or_parents<'a>(&'a self, field: &'a Dictionary) -> Option<&'a Object> {
         if let Some(result) = self.find_opt_in_kids(field) {
             Some(result)
         } else {
@@ -427,10 +471,7 @@ impl Form {
         }
     }
 
-    fn find_opt_in_kids<'a>(
-        &'a self,
-        field: &'a Dictionary,
-    ) -> Option<&'a Object> {
+    fn find_opt_in_kids<'a>(&'a self, field: &'a Dictionary) -> Option<&'a Object> {
         // Look in self first
         if let Some(opt) = self.get_resolved_opt(field) {
             return Some(opt);
@@ -453,10 +494,7 @@ impl Form {
         None
     }
 
-    fn find_opt_in_parents<'a>(
-        &'a self,
-        field: &'a Dictionary,
-    ) -> Option<&'a Object> {
+    fn find_opt_in_parents<'a>(&'a self, field: &'a Dictionary) -> Option<&'a Object> {
         // Look in self first
         if let Some(opt) = self.get_resolved_opt(field) {
             return Some(opt);
@@ -480,6 +518,42 @@ impl Form {
         }
 
         None
+    }
+
+    pub fn get_checkbox_values(&self, field: &Dictionary) -> Vec<String> {
+        let mut values = Vec::new();
+
+        if let Ok(kids) = field.get(b"Kids").and_then(|o| o.as_array()) {
+            // Radio-style with multiple widgets
+            for kid_ref in kids {
+                if let Ok(kid_id) = kid_ref.as_reference() {
+                    if let Ok(widget_obj) = self.doc.get_object(kid_id) {
+                        if let Ok(widget) = widget_obj.as_dict() {
+                            Self::extract_checkbox_appearances(widget, &mut values);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Standalone checkbox (single widget)
+            Self::extract_checkbox_appearances(field, &mut values);
+        }
+
+        values
+    }
+
+    fn extract_checkbox_appearances(field: &lopdf::Dictionary, values: &mut Vec<String>) {
+        if let Ok(ap_dict) = field.get(b"AP").and_then(|o| o.as_dict()) {
+            if let Ok(n_dict) = ap_dict.get(b"N").and_then(|o| o.as_dict()) {
+                for (name, _) in n_dict.iter() {
+                    if let Ok(name_str) = std::str::from_utf8(name) {
+                        if name_str != "Off" && !values.contains(&name_str.to_string()) {
+                            values.push(name_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn get_resolved_opt<'a>(&'a self, dict: &'a Dictionary) -> Option<&'a Object> {
@@ -529,8 +603,7 @@ impl Form {
     ///
     /// A more sophisticated parser is needed here
     fn regenerate_text_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
-        if let Ok(Object::Dictionary(acroform)) = self.doc.get_object_mut(self.form_ids[n])
-        {
+        if let Ok(Object::Dictionary(acroform)) = self.doc.get_object_mut(self.form_ids[n]) {
             acroform.set("NeedAppearances", Object::Boolean(true));
             acroform.remove(b"AP");
         }
@@ -666,30 +739,68 @@ impl Form {
     ///
     /// # Panics
     /// Will panic if n is larger than the number of fields
-    pub fn set_check_box(&mut self, n: usize, is_checked: bool) -> Result<(), ValueError> {
-        match self.get_state(n) {
-            FieldState::CheckBox { .. } => {
-                let field = self
-                    .doc
-                    .objects
-                    .get_mut(&self.form_ids[n])
-                    .unwrap()
-                    .as_dict_mut()
-                    .unwrap();
+    pub fn set_check_box(
+        &mut self,
+        n: usize,
+        value: &str,
+        is_checked: bool,
+    ) -> Result<(), ValueError> {
+        let field_id = self.form_ids[n];
 
-                let on = get_on_value(field);
-                let state = Object::Name(
-                    if is_checked { on.as_str() } else { "Off" }
-                        .to_owned()
-                        .into_bytes(),
-                );
+        // Extract kids BEFORE mutable borrow
+        let kids = self
+            .doc
+            .objects
+            .get(&field_id)
+            .and_then(|obj| obj.as_dict().ok())
+            .and_then(|dict| dict.get(b"Kids").ok())
+            .and_then(|o| o.as_array().ok())
+            .map(|arr| arr.clone());
 
-                field.set("V", state.clone());
-                field.set("AS", state);
-
-                Ok(())
+        if let Some(kids) = kids {
+            // Now safe to borrow mutably
+            for kid_ref in kids {
+                if let Ok(kid_id) = kid_ref.as_reference() {
+                    if let Ok(widget_obj) = self.doc.get_object_mut(kid_id) {
+                        if let Ok(widget) = widget_obj.as_dict_mut() {
+                            if let Ok(ap) = widget.get(b"AP").and_then(|o| o.as_dict()) {
+                                if let Ok(n_dict) = ap.get(b"N").and_then(|o| o.as_dict()) {
+                                    for (name, _) in n_dict.iter() {
+                                        if let Ok(name_str) = std::str::from_utf8(name) {
+                                            if name_str == value {
+                                                let state = if is_checked {
+                                                    Object::Name(name.to_vec())
+                                                } else {
+                                                    Object::Name(b"Off".to_vec())
+                                                };
+                                                widget.set("AS", state);
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            _ => Err(ValueError::TypeMismatch),
+
+            Err(ValueError::UnknownOption)
+        } else {
+            // Now safe to mutably access `field`
+            let field = self
+                .doc
+                .objects
+                .get_mut(&field_id)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+
+            let on = get_on_value(field);
+            let state = Object::Name(if is_checked { on.as_bytes() } else { b"Off" }.to_vec());
+            field.set("V", state.clone());
+            field.set("AS", state);
+            Ok(())
         }
     }
 
@@ -745,19 +856,11 @@ impl Form {
                             .unwrap();
                         match choices.len() {
                             0 => field.set("V", Object::Null),
-                            1 => field.set(
-                                "V",
-                                encode_pdf_string(&choices[0])
-                            ),
+                            1 => field.set("V", encode_pdf_string(&choices[0])),
                             _ => field.set(
                                 "V",
                                 Object::Array(
-                                    choices
-                                        .iter()
-                                        .map(|x| {
-                                            encode_pdf_string(&x)
-                                        })
-                                        .collect(),
+                                    choices.iter().map(|x| encode_pdf_string(&x)).collect(),
                                 ),
                             ),
                         };
@@ -783,8 +886,10 @@ impl Form {
             } => {
                 if options.contains(&choice) || editable {
                     let value_obj = encode_pdf_string(&choice);
-                    
-                    if let Some(Object::Dictionary(field)) = self.doc.objects.get_mut(&self.form_ids[n]) {
+
+                    if let Some(Object::Dictionary(field)) =
+                        self.doc.objects.get_mut(&self.form_ids[n])
+                    {
                         field.set("V", value_obj.clone());
                         field.set("DV", value_obj);
                         field.remove(b"AP");
@@ -929,21 +1034,26 @@ impl Form {
             .map(|o| o.as_f32().unwrap_or(o.as_i64().unwrap_or(0) as f32))
             .collect::<Vec<_>>();
 
-        let da = field.get(b"DA").or_else(|_| {
-            self.doc
-                .catalog()?
-                .get(b"AcroForm")
-                .ok()
-                .and_then(|obj| obj.as_reference().ok())
-                .and_then(|id| self.doc.get_object(id).ok())
-                .and_then(|obj| obj.as_dict().ok())
-                .and_then(|acroform| acroform.get(b"DA").ok())
-                .ok_or(lopdf::Error::Unimplemented("No DA found in AcroForm"))
-        })?.clone();
+        let da = field
+            .get(b"DA")
+            .or_else(|_| {
+                self.doc
+                    .catalog()?
+                    .get(b"AcroForm")
+                    .ok()
+                    .and_then(|obj| obj.as_reference().ok())
+                    .and_then(|id| self.doc.get_object(id).ok())
+                    .and_then(|obj| obj.as_dict().ok())
+                    .and_then(|acroform| acroform.get(b"DA").ok())
+                    .ok_or(lopdf::Error::Unimplemented("No DA found in AcroForm"))
+            })?
+            .clone();
 
         let mut content = Content { operations: vec![] };
 
-        content.operations.push(Operation::new("BMC", vec!["Tx".into()]));
+        content
+            .operations
+            .push(Operation::new("BMC", vec!["Tx".into()]));
         content.operations.push(Operation::new("q", vec![]));
         content.operations.push(Operation::new("BT", vec![]));
 
@@ -956,7 +1066,10 @@ impl Form {
         let font_size = (font.0).1;
         let font_color = font.1;
 
-        content.operations.push(Operation::new("Tf", vec![font_name.into(), font_size.into()]));
+        content.operations.push(Operation::new(
+            "Tf",
+            vec![font_name.into(), font_size.into()],
+        ));
         content.operations.push(Operation::new(
             font_color.0,
             match font_color.0 {
@@ -988,18 +1101,26 @@ impl Form {
             vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
         ));
 
-
         let string_obj = match value {
             Object::Reference(id) => match self.doc.get_object(id)? {
                 Object::String(bytes, format) => Object::String(bytes.clone(), *format),
-                _ => return Err(lopdf::Error::DictKey("Expected string behind /V reference".into())),
+                _ => {
+                    return Err(lopdf::Error::DictKey(
+                        "Expected string behind /V reference".into(),
+                    ));
+                }
             },
             Object::String(_, _) => value.clone(),
-            _ => return Err(lopdf::Error::DictKey("Expected /V to be string or ref to string".into())),
+            _ => {
+                return Err(lopdf::Error::DictKey(
+                    "Expected /V to be string or ref to string".into(),
+                ));
+            }
         };
 
-        content.operations.push(Operation::new("Tj", vec![string_obj]));
-
+        content
+            .operations
+            .push(Operation::new("Tj", vec![string_obj]));
 
         content.operations.push(Operation::new("ET", vec![]));
         content.operations.push(Operation::new("Q", vec![]));
@@ -1007,24 +1128,26 @@ impl Form {
 
         let appearance_stream = lopdf::Stream::new(
             dictionary! {
-            "Subtype" => "Form",
-            "Type" => "XObject",
-            "BBox" => lopdf::Object::Array(rect.iter().copied().map(|f| f.into()).collect()),
-            "Resources" => lopdf::dictionary! {}, // could inherit from AcroForm later
-        },
+                "Subtype" => "Form",
+                "Type" => "XObject",
+                "BBox" => lopdf::Object::Array(rect.iter().copied().map(|f| f.into()).collect()),
+                "Resources" => lopdf::dictionary! {}, // could inherit from AcroForm later
+            },
             content.encode()?,
         );
 
         let stream_id = self.doc.add_object(appearance_stream);
 
         if let Some(Object::Dictionary(field_dict)) = self.doc.objects.get_mut(&field_id) {
-            field_dict.set("AP", dictionary! {
-            "N" => Object::Reference(stream_id),
-        });
+            field_dict.set(
+                "AP",
+                dictionary! {
+                    "N" => Object::Reference(stream_id),
+                },
+            );
             field_dict.set("AS", Object::Name(b"N".to_vec()));
         }
 
         Ok(())
     }
-
 }
