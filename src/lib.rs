@@ -1,8 +1,3 @@
-#[macro_use]
-extern crate bitflags;
-#[macro_use]
-extern crate derive_error;
-
 mod utils;
 
 use std::collections::VecDeque;
@@ -10,9 +5,8 @@ use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::str;
-
-use bitflags::_core::str::from_utf8;
-
+use std::str::from_utf8;
+use derive_error::Error;
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, ObjectId, StringFormat};
 
@@ -202,8 +196,8 @@ impl Form {
             .as_dict()
             .unwrap();
 
-        let type_str = field.get(b"FT").unwrap().as_name_str().unwrap();
-        if type_str == "Btn" {
+        let type_str = field.get(b"FT").unwrap().as_name().unwrap();
+        if type_str == b"Btn" {
             let flags = ButtonFlags::from_bits_truncate(get_field_flags(field));
             if flags.intersects(ButtonFlags::RADIO | ButtonFlags::NO_TOGGLE_TO_OFF) {
                 FieldType::Radio
@@ -212,14 +206,14 @@ impl Form {
             } else {
                 FieldType::CheckBox
             }
-        } else if type_str == "Ch" {
+        } else if type_str == b"Ch" {
             let flags = ChoiceFlags::from_bits_truncate(get_field_flags(field));
             if flags.intersects(ChoiceFlags::COBMO) {
                 FieldType::ComboBox
             } else {
                 FieldType::ListBox
             }
-        } else if type_str == "Tx" {
+        } else if type_str == b"Tx" {
             FieldType::Text
         } else {
             FieldType::Unknown
@@ -281,9 +275,9 @@ impl Form {
             FieldType::Button => FieldState::Button,
             FieldType::Radio => FieldState::Radio {
                 selected: match field.get(b"V") {
-                    Ok(name) => name.as_name_str().unwrap().to_owned(),
+                    Ok(name) => String::from_utf8_lossy(name.as_name().unwrap()).to_string(),
                     _ => match field.get(b"AS") {
-                        Ok(name) => name.as_name_str().unwrap().to_owned(),
+                        Ok(name) => String::from_utf8_lossy(name.as_name().unwrap()).to_string(),
                         _ => "".to_owned(),
                     },
                 },
@@ -293,9 +287,9 @@ impl Form {
             },
             FieldType::CheckBox => FieldState::CheckBox {
                 is_checked: match field.get(b"V") {
-                    Ok(name) => name.as_name_str().unwrap() == "Yes",
+                    Ok(name) => name.as_name().unwrap() == b"Yes",
                     _ => match field.get(b"AS") {
-                        Ok(name) => name.as_name_str().unwrap() == "Yes",
+                        Ok(name) => name.as_name().unwrap() == b"Yes",
                         _ => false,
                     },
                 },
@@ -476,8 +470,8 @@ impl Form {
             .iter()
             .map(|object| {
                 object
-                    .as_f64()
-                    .unwrap_or(object.as_i64().unwrap_or(0) as f64) as f32
+                    .as_f32()
+                    .unwrap_or(object.as_i64().unwrap_or(0) as f32) as f32
             })
             .collect::<Vec<_>>();
 
@@ -512,7 +506,7 @@ impl Form {
         ]);
 
         let font = parse_font(match da {
-            Object::String(ref bytes, _) => Some(from_utf8(bytes)?),
+            Object::String(ref bytes, _) => Some(from_utf8(bytes).map_err(|_err| lopdf::Error::TextStringDecode)?),
             _ => None,
         });
 
