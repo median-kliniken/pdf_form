@@ -23,7 +23,7 @@ pub struct Form {
 }
 
 /// The possible types of fillable form fields in a PDF
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum FieldType {
     Button,
     Radio,
