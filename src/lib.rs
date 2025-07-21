@@ -448,6 +448,10 @@ impl Form {
     ///
     /// A more sophisticated parser is needed here
     fn regenerate_text_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
+        if let Ok(Object::Dictionary(ref mut acroform)) = self.doc.get_object_mut(self.form_ids[n]) {
+            acroform.set("NeedAppearances", Object::Boolean(true));
+        }
+        
         let field = {
             self.doc
                 .objects
@@ -456,7 +460,8 @@ impl Form {
                 .as_dict()
                 .unwrap()
         };
-
+        
+        
         // The value of the object (should be a string)
         let value = field.get(b"V")?.to_owned();
 
