@@ -981,7 +981,19 @@ impl Form {
             vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
         ));
 
-        content.operations.push(Operation::new("Tj", vec![value]));
+
+        let string_obj = match value {
+            Object::Reference(id) => match self.doc.get_object(id)? {
+                Object::String(bytes, format) => Object::String(bytes.clone(), *format),
+                _ => return Err(lopdf::Error::DictKey("Expected string behind /V reference".into())),
+            },
+            Object::String(_, _) => value.clone(),
+            _ => return Err(lopdf::Error::DictKey("Expected /V to be string or ref to string".into())),
+        };
+
+        content.operations.push(Operation::new("Tj", vec![string_obj]));
+
+
         content.operations.push(Operation::new("ET", vec![]));
         content.operations.push(Operation::new("Q", vec![]));
         content.operations.push(Operation::new("EMC", vec![]));
