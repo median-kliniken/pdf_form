@@ -6,10 +6,10 @@ readme = "README.md"
 keywords = ["pdf", "form"]
 description = "A library for programatically filling out pdf forms"
 license = "MIT"
-edition = "2018"
+edition = "2024"
 
 [dependencies]
 bitflags = "2.9.1"
 derive-error = "0.0.5"
 lopdf = "0.36.0"
-pdf_encoding = "0.4.0"
+

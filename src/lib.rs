@@ -526,7 +526,7 @@ impl Form {
     ///
     /// A more sophisticated parser is needed here
     fn regenerate_text_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
-        if let Ok(Object::Dictionary(ref mut acroform)) = self.doc.get_object_mut(self.form_ids[n])
+        if let Ok(Object::Dictionary(acroform)) = self.doc.get_object_mut(self.form_ids[n])
         {
             acroform.set("NeedAppearances", Object::Boolean(true));
             acroform.remove(b"AP");
@@ -779,7 +779,7 @@ impl Form {
                 options, editable, ..
             } => {
                 if options.contains(&choice) || editable {
-                    self.set_pdf_field_object(self.form_ids[n], encode_pdf_string(&choice), true);
+                    self.update_pdf_field_value_preserving_structure(self.form_ids[n], encode_pdf_string(&choice), true);
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
@@ -837,38 +837,67 @@ impl Form {
         res
     }
 
-    pub fn set_pdf_field_object(
+    pub fn update_pdf_field_value_preserving_structure(
         &mut self,
-        field_dict_obj_id: ObjectId,
+        field_id: ObjectId,
         value: Object,
         update_default: bool,
     ) {
-        // First: resolve the field dict from the document
-        let mut update_ref = None;
+        // First: extract any referenced object IDs from the field dict
+        let (v_ref_opt, dv_ref_opt) = {
+            let field_obj = self.doc.objects.get(&field_id);
+            let mut v_ref = None;
+            let mut dv_ref = None;
 
-        if let Some(field_obj) = self.doc.objects.get(&field_dict_obj_id) {
-            if let Ok(field_dict) = field_obj.as_dict() {
-                if let Ok(&Object::Reference(val_ref)) = field_dict.get(b"V") {
-                    update_ref = Some(val_ref);
+            if let Some(Object::Dictionary(field_dict)) = field_obj {
+                if let Ok(&Object::Reference(r)) = field_dict.get(b"V") {
+                    v_ref = Some(r);
+                }
+                if update_default {
+                    if let Ok(&Object::Reference(r)) = field_dict.get(b"DV") {
+                        dv_ref = Some(r);
+                    }
+                }
+            }
+
+            (v_ref, dv_ref)
+        };
+
+        let mut updated = false;
+
+        // Then: perform mutations
+        if let Some(v_ref) = v_ref_opt {
+            if let Some(obj) = self.doc.objects.get_mut(&v_ref) {
+                *obj = value.clone();
+                updated = true;
+            }
+        }
+
+        if update_default {
+            if let Some(dv_ref) = dv_ref_opt {
+                if let Some(obj) = self.doc.objects.get_mut(&dv_ref) {
+                    *obj = value.clone();
                 }
             }
         }
 
-        // If /V is a reference, update the referenced object
-        if let Some(val_ref) = update_ref {
-            if let Some(obj) = self.doc.objects.get_mut(&val_ref) {
-                *obj = value.clone();
-                return;
-            }
+        if updated {
+            return;
         }
 
-        // Fallback: directly set /V and optionally /DV in the field dictionary
-        if let Some(Object::Dictionary(field_dict)) = self.doc.objects.get_mut(&field_dict_obj_id) {
-            field_dict.set("V", value.clone());
+        // Fallback: insert new indirect object and update field dict
+        let new_value_id = self.doc.new_object_id();
+        self.doc.objects.insert(new_value_id, value.clone());
+
+        if let Some(Object::Dictionary(field_dict)) = self.doc.objects.get_mut(&field_id) {
+            field_dict.set("V", Object::Reference(new_value_id));
+
             if update_default {
-                field_dict.set("DV", value);
+                field_dict.set("DV", Object::Reference(new_value_id));
             }
+
+            // Optional: remove appearance stream to force redraw
+            field_dict.remove(b"AP");
         }
     }
-
 }
