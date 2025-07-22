@@ -150,6 +150,8 @@ impl Form {
                 .ok_or(LoadError::NotAReference)?
                 .as_dict_mut()?;
 
+            acroform.set("NeedAppearances", Object::Boolean(true));
+
             let fields_list = acroform.get(b"Fields")?.as_array()?;
             queue.append(&mut VecDeque::from(fields_list.clone()));
 
