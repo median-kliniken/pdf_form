@@ -1,5 +1,6 @@
 mod utils;
 
+use lopdf::dictionary;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
@@ -782,6 +783,7 @@ impl Form {
             } => {
                 if options.contains(&choice) || editable {
                     self.update_pdf_field_value_preserving_structure(self.form_ids[n], encode_pdf_string(&choice), true);
+                    self.regenerate_choice_appearance(n).map_err(|_| ValueError::InvalidSelection)?;
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
@@ -902,4 +904,108 @@ impl Form {
             field_dict.remove(b"AP");
         }
     }
+
+    fn regenerate_choice_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
+        let field_id = self.form_ids[n];
+        let field = self
+            .doc
+            .objects
+            .get(&field_id)
+            .ok_or_else(|| lopdf::Error::DictKey("field".into()))?
+            .as_dict()?;
+
+        let value = field.get(b"V")?.clone();
+        let rect = field
+            .get(b"Rect")?
+            .as_array()?
+            .iter()
+            .map(|o| o.as_f32().unwrap_or(o.as_i64().unwrap_or(0) as f32))
+            .collect::<Vec<_>>();
+
+        let da = field.get(b"DA").or_else(|_| {
+            self.doc
+                .catalog()?
+                .get(b"AcroForm")
+                .ok()
+                .and_then(|obj| obj.as_reference().ok())
+                .and_then(|id| self.doc.get_object(id).ok())
+                .and_then(|obj| obj.as_dict().ok())
+                .and_then(|acroform| acroform.get(b"DA").ok())
+                .ok_or(lopdf::Error::Unimplemented("No DA found in AcroForm"))
+        })?.clone();
+
+        let mut content = Content { operations: vec![] };
+
+        content.operations.push(Operation::new("BMC", vec!["Tx".into()]));
+        content.operations.push(Operation::new("q", vec![]));
+        content.operations.push(Operation::new("BT", vec![]));
+
+        // Parse font info from DA string
+        let font = parse_font(match da {
+            Object::String(ref bytes, _) => Some(from_utf8(bytes).unwrap_or_default()),
+            _ => None,
+        });
+        let font_name = (font.0).0;
+        let font_size = (font.0).1;
+        let font_color = font.1;
+
+        content.operations.push(Operation::new("Tf", vec![font_name.into(), font_size.into()]));
+        content.operations.push(Operation::new(
+            font_color.0,
+            match font_color.0 {
+                "k" => vec![
+                    font_color.1.into(),
+                    font_color.2.into(),
+                    font_color.3.into(),
+                    font_color.4.into(),
+                ],
+                "rg" => vec![
+                    font_color.1.into(),
+                    font_color.2.into(),
+                    font_color.3.into(),
+                ],
+                _ => vec![font_color.1.into()],
+            },
+        ));
+
+        let x = 2.0;
+        let dy = rect[1] - rect[3];
+        let y = if dy > 0.0 {
+            0.5 * dy - 0.4 * font_size as f32
+        } else {
+            0.5 * font_size as f32
+        };
+
+        content.operations.push(Operation::new(
+            "Tm",
+            vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
+        ));
+
+        content.operations.push(Operation::new("Tj", vec![value]));
+        content.operations.push(Operation::new("ET", vec![]));
+        content.operations.push(Operation::new("Q", vec![]));
+        content.operations.push(Operation::new("EMC", vec![]));
+
+        let appearance_stream = lopdf::Stream::new(
+            dictionary! {
+            "Subtype" => "Form",
+            "Type" => "XObject",
+            "BBox" => lopdf::Object::Array(rect.iter().copied().map(|f| f.into()).collect()),
+            "Resources" => lopdf::dictionary! {}, // could inherit from AcroForm later
+        },
+            content.encode()?,
+        );
+
+        let stream_id = self.doc.add_object(appearance_stream);
+
+        if let Some(Object::Dictionary(field_dict)) = self.doc.objects.get_mut(&field_id) {
+            field_dict.set("AP", dictionary! {
+            "N" => Object::Reference(stream_id),
+        });
+            field_dict.set("AS", Object::Name(b"N".to_vec()));
+        }
+
+        Ok(())
+    }
+
 }
