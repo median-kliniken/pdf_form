@@ -320,24 +320,31 @@ impl Form {
                 // The options is an array of either text elements or arrays where the second
                 // element is what we want
                 options: match field.get(b"Opt") {
-                    Ok(&Object::Array(ref options)) => options
-                        .iter()
-                        .map(|x| match *x {
-                            Object::String(ref s, StringFormat::Literal) => {
-                                str::from_utf8(&s).unwrap().to_owned()
+                    Ok(object) => {
+                        match object {
+                            Object::Array(ref options) => {
+                                options
+                                    .iter()
+                                    .map(|x| match *x {
+                                        Object::String(ref s, StringFormat::Literal) => {
+                                            from_utf8(&s).unwrap().to_owned()
+                                        }
+                                        Object::Array(ref arr) => {
+                                            if let Object::String(ref s, StringFormat::Literal) = &arr[1] {
+                                                from_utf8(&s).unwrap().to_owned()
+                                            } else {
+                                                String::new()
+                                            }
+                                        }
+                                        _ => String::new(),
+                                    })
+                                    .filter(|x| !x.is_empty())
+                                    .collect()
                             }
-                            Object::Array(ref arr) => {
-                                if let Object::String(ref s, StringFormat::Literal) = &arr[1] {
-                                    str::from_utf8(&s).unwrap().to_owned()
-                                } else {
-                                    String::new()
-                                }
-                            }
-                            _ => String::new(),
-                        })
-                        .filter(|x| !x.is_empty())
-                        .collect(),
-                    _ => Vec::new(),
+                            _ => Vec::new()
+                        }
+                    }
+                    Err(_) => Vec::new(),
                 },
                 multiselect: {
                     let flags = ChoiceFlags::from_bits_truncate(get_field_flags(field));
