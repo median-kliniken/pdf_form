@@ -310,8 +310,8 @@ impl Form {
                             Object::Array(ref chosen) => {
                                 let mut res = Vec::new();
                                 for obj in chosen {
-                                    if let Object::String(ref s, StringFormat::Literal) = *obj {
-                                        res.push(str::from_utf8(&s).unwrap().to_owned());
+                                    if let Some(string) = Self::decode_pdf_string(obj) {
+                                        res.push(string);
                                     }
                                 }
                                 res
@@ -327,7 +327,7 @@ impl Form {
                             .iter()
                             .map(|x| match *x {
                                 Object::String(ref s, StringFormat::Literal) => {
-                                    from_utf8(&s).unwrap().to_owned()
+                                    Self::decode_pdf_string(x).unwrap_or_else(String::new)
                                 }
                                 Object::Array(ref arr) => {
                                     Self::decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
@@ -358,8 +358,8 @@ impl Form {
                         Object::Array(ref chosen) => {
                             let mut res = Vec::new();
                             for obj in chosen {
-                                if let Object::String(ref s, StringFormat::Literal) = *obj {
-                                    res.push(str::from_utf8(&s).unwrap().to_owned());
+                                if let Some(string) = Self::decode_pdf_string(obj) {
+                                    res.push(string);
                                 }
                             }
                             res
