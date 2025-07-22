@@ -277,9 +277,9 @@ impl Form {
             FieldType::Button => FieldState::Button,
             FieldType::Radio => FieldState::Radio {
                 selected: match field.get(b"V") {
-                    Ok(name) => String::from_utf8_lossy(name.as_name().unwrap()).to_string(),
+                    Ok(name) => decode_pdf_string(name).unwrap_or_else(String::new),
                     _ => match field.get(b"AS") {
-                        Ok(name) => String::from_utf8_lossy(name.as_name().unwrap()).to_string(),
+                        Ok(name) => decode_pdf_string(name).unwrap_or_else(String::new),
                         _ => "".to_owned(),
                     },
                 },
@@ -479,7 +479,7 @@ impl Form {
         None
     }
 
-    fn get_resolved_opt<'a>(&'a self, dict: &'a Dictionary) -> Option<&Object> {
+    fn get_resolved_opt<'a>(&'a self, dict: &'a Dictionary) -> Option<&'a Object> {
         let opt_obj = dict.get(b"Opt").ok()?;
 
         match opt_obj {
