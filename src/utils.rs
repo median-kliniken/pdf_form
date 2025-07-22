@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{decode_text_string, text_string, Dictionary, Object, StringFormat};
+use lopdf::{Dictionary, Object, StringFormat, decode_text_string, text_string};
 
 use crate::from_utf8;
 
