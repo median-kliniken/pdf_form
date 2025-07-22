@@ -4,7 +4,7 @@ use derive_error::Error;
 use lopdf::content::{Content, Operation};
 use lopdf::dictionary;
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -84,7 +84,10 @@ pub enum FieldState {
         required: bool,
     },
     /// A group of check boxes
-    CheckBoxGroup { states: Vec<SingleCheckboxState> },
+    CheckBoxGroup {
+        states: Vec<SingleCheckboxState>,
+        options: Vec<String>,
+    },
     /// The toggle state of the checkbox
     CheckBox {
         is_checked: bool,
@@ -302,6 +305,7 @@ impl Form {
                 if let Ok(kids) = field.get(b"Kids").and_then(|o| o.as_array()) {
                     // Grouped checkboxes
                     let mut checkboxes = Vec::new();
+                    let mut choices = HashSet::new();
 
                     for kid_ref in kids {
                         if let Ok(kid_id) = kid_ref.as_reference() {
@@ -317,12 +321,13 @@ impl Form {
                                                         .and_then(|v| v.as_name().ok())
                                                         .map(|n| n == name)
                                                         .unwrap_or(false);
+
+                                                    let value = decode_pdf_string_from_bytes(name)
+                                                        .unwrap_or_else(String::new);
+                                                    choices.insert(value.clone());
                                                     checkboxes.push(SingleCheckboxState {
                                                         widget_id: kid_id,
-                                                        on_value: decode_pdf_string_from_bytes(
-                                                            name,
-                                                        )
-                                                        .unwrap_or_else(String::new),
+                                                        on_value: value,
                                                         is_checked,
                                                         readonly: is_read_only(widget),
                                                         required: is_required(widget),
@@ -336,7 +341,10 @@ impl Form {
                         }
                     }
 
-                    FieldState::CheckBoxGroup { states: checkboxes }
+                    FieldState::CheckBoxGroup {
+                        states: checkboxes,
+                        options: Vec::from_iter(choices.iter().cloned()),
+                    }
                 } else {
                     // Simple checkbox
                     let is_checked = match field.get(b"V") {
@@ -773,8 +781,8 @@ impl Form {
                                     for (name, _) in n_dict.iter() {
                                         if let Some(name_str) = decode_pdf_string_from_bytes(name) {
                                             if name_str == value {
+                                                matched = true;
                                                 new_state = Some(if is_checked {
-                                                    matched = true;
                                                     Object::Name(name.to_vec())
                                                 } else {
                                                     Object::Name(b"Off".to_vec())

@@ -132,11 +132,13 @@ pub fn decode_pdf_string(obj: &Object) -> Option<String> {
     decode_text_string(obj).ok()
 }
 
+// HACK: Convert str into object, then decode object.
 pub fn decode_pdf_string_from_str(s: &str) -> Option<String> {
     let obj = encode_pdf_string(s);
     decode_pdf_string(&obj)
 }
 
+// HACK: Convert bytes into object, then decode object.
 pub fn decode_pdf_string_from_bytes(bytes: &[u8]) -> Option<String> {
     let s = bytes.to_vec();
     if s.starts_with(b"\xFE\xFF") {
