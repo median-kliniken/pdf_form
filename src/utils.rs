@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{decode_text_string, Dictionary, Object, StringFormat};
+use lopdf::{decode_text_string, text_string, Dictionary, Object};
 
 use crate::from_utf8;
 
@@ -132,13 +132,5 @@ pub fn decode_pdf_string(obj: &Object) -> Option<String> {
 }
 
 pub fn encode_pdf_string(value: &str) -> Object {
-    if value.is_ascii() {
-        Object::string_literal(value.as_bytes())
-    } else {
-        let mut bytes = vec![0xFE, 0xFF]; // BOM
-        for unit in value.encode_utf16() {
-            bytes.extend_from_slice(&unit.to_be_bytes());
-        }
-        Object::String(bytes, StringFormat::Hexadecimal)
-    }
+    text_string(value)
 }
