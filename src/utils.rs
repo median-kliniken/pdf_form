@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{Dictionary, Object};
+use lopdf::{Dictionary, Object, StringFormat};
 
 use crate::from_utf8;
 
@@ -124,5 +124,37 @@ pub fn parse_font(font_string: Option<&str>) -> ((&str, i32), (&str, i32, i32, i
             }
         }
         _ => (default_font, default_color),
+    }
+}
+
+pub fn decode_pdf_string(obj: &Object) -> Option<String> {
+    match obj {
+        Object::String(bytes, StringFormat::Literal) |
+        Object::String(bytes, StringFormat::Hexadecimal) => {
+            // UTF-16BE if BOM exists
+            if bytes.starts_with(&[0xFE, 0xFF]) {
+                let utf16: Vec<u16> = bytes[2..]
+                    .chunks(2)
+                    .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                    .collect();
+                String::from_utf16(&utf16).ok()
+            } else {
+                // Otherwise: try PDFDocEncoding (not natively supported)
+                Some(String::from_utf8_lossy(bytes).to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn encode_pdf_string(value: &str) -> Object {
+    if value.is_ascii() {
+        Object::string_literal(value.as_bytes())
+    } else {
+        let mut bytes = vec![0xFE, 0xFF]; // BOM
+        for unit in value.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        Object::String(bytes, StringFormat::Hexadecimal)
     }
 }

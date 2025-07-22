@@ -310,7 +310,7 @@ impl Form {
                             Object::Array(ref chosen) => {
                                 let mut res = Vec::new();
                                 for obj in chosen {
-                                    if let Some(string) = Self::decode_pdf_string(obj) {
+                                    if let Some(string) = decode_pdf_string(obj) {
                                         res.push(string);
                                     }
                                 }
@@ -327,10 +327,10 @@ impl Form {
                             .iter()
                             .map(|x| match *x {
                                 Object::String(ref s, StringFormat::Literal) => {
-                                    Self::decode_pdf_string(x).unwrap_or_else(String::new)
+                                    decode_pdf_string(x).unwrap_or_else(String::new)
                                 }
                                 Object::Array(ref arr) => {
-                                    Self::decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
+                                    decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
                                 }
                                 _ => String::new(),
                             })
@@ -358,7 +358,7 @@ impl Form {
                         Object::Array(ref chosen) => {
                             let mut res = Vec::new();
                             for obj in chosen {
-                                if let Some(string) = Self::decode_pdf_string(obj) {
+                                if let Some(string) = decode_pdf_string(obj) {
                                     res.push(string);
                                 }
                             }
@@ -438,26 +438,6 @@ impl Form {
         None
     }
 
-    fn decode_pdf_string(obj: &Object) -> Option<String> {
-        match obj {
-            Object::String(bytes, StringFormat::Literal) |
-            Object::String(bytes, StringFormat::Hexadecimal) => {
-                // UTF-16BE if BOM exists
-                if bytes.starts_with(&[0xFE, 0xFF]) {
-                    let utf16: Vec<u16> = bytes[2..]
-                        .chunks(2)
-                        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
-                        .collect();
-                    String::from_utf16(&utf16).ok()
-                } else {
-                    // Otherwise: try PDFDocEncoding (not natively supported)
-                    Some(String::from_utf8_lossy(bytes).to_string())
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// If the field at index `n` is a text field, fills in that field with the text `s`.
     /// If it is not a text field, returns ValueError
     ///
@@ -474,9 +454,9 @@ impl Form {
                     .as_dict_mut()
                     .unwrap();
 
-                field.set("V", Object::string_literal(s.into_bytes()));
+                field.set("V", encode_pdf_string(&s));
 
-                // Regenerate text appearance confoming the new text but ignore the result
+                // Regenerate text appearance conforming the new text but ignore the result
                 let _ = self.regenerate_text_appearance(n);
 
                 Ok(())
@@ -713,10 +693,7 @@ impl Form {
                             0 => field.set("V", Object::Null),
                             1 => field.set(
                                 "V",
-                                Object::String(
-                                    choices[0].clone().into_bytes(),
-                                    StringFormat::Literal,
-                                ),
+                                encode_pdf_string(&choices[0])
                             ),
                             _ => field.set(
                                 "V",
@@ -724,10 +701,7 @@ impl Form {
                                     choices
                                         .iter()
                                         .map(|x| {
-                                            Object::String(
-                                                x.clone().into_bytes(),
-                                                StringFormat::Literal,
-                                            )
+                                            encode_pdf_string(&x)
                                         })
                                         .collect(),
                                 ),
@@ -763,7 +737,7 @@ impl Form {
                         .unwrap();
                     field.set(
                         "V",
-                        Object::String(choice.into_bytes(), StringFormat::Literal),
+                        encode_pdf_string(&choice)
                     );
                     Ok(())
                 } else {
