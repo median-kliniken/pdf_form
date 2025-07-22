@@ -1048,7 +1048,7 @@ impl Form {
         }
     }
 
-    fn regenerate_choice_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
+    pub fn regenerate_choice_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
         let field_id = self.form_ids[n];
         let field = self
             .doc
@@ -1057,126 +1057,111 @@ impl Form {
             .ok_or_else(|| lopdf::Error::DictKey("field".into()))?
             .as_dict()?;
 
-        let value = field.get(b"V")?.clone();
-        let rect = field
-            .get(b"Rect")?
-            .as_array()?
+        let value_obj = field.get(b"V")?.clone();
+        let value = match value_obj {
+            Object::String(ref bytes, _) => decode_pdf_string_from_bytes(bytes),
+            Object::Name(ref name) => decode_pdf_string_from_bytes(name),
+            _ => return Err(lopdf::Error::DictKey("V".into())),
+        };
+
+        let kids = field.get(b"Kids").and_then(|o| o.as_array()).ok();
+
+        let widget_ids = match kids {
+            Some(array) => array
+                .iter()
+                .filter_map(|o| o.as_reference().ok())
+                .collect::<Vec<_>>(),
+            None => vec![field_id],
+        };
+
+        let font_ref = self
+            .doc
+            .objects
             .iter()
-            .map(|o| o.as_f32().unwrap_or(o.as_i64().unwrap_or(0) as f32))
-            .collect::<Vec<_>>();
-
-        let da = field
-            .get(b"DA")
-            .or_else(|_| {
-                self.doc
-                    .catalog()?
-                    .get(b"AcroForm")
-                    .ok()
-                    .and_then(|obj| obj.as_reference().ok())
-                    .and_then(|id| self.doc.get_object(id).ok())
-                    .and_then(|obj| obj.as_dict().ok())
-                    .and_then(|acroform| acroform.get(b"DA").ok())
-                    .ok_or(lopdf::Error::Unimplemented("No DA found in AcroForm"))
-            })?
-            .clone();
-
-        let mut content = Content { operations: vec![] };
-
-        content
-            .operations
-            .push(Operation::new("BMC", vec!["Tx".into()]));
-        content.operations.push(Operation::new("q", vec![]));
-        content.operations.push(Operation::new("BT", vec![]));
-
-        // Parse font info from DA string
-        let font = parse_font(match da {
-            Object::String(ref bytes, _) => Some(from_utf8(bytes).unwrap_or_default()),
-            _ => None,
-        });
-        let font_name = (font.0).0;
-        let font_size = (font.0).1;
-        let font_color = font.1;
-
-        content.operations.push(Operation::new(
-            "Tf",
-            vec![font_name.into(), font_size.into()],
-        ));
-        content.operations.push(Operation::new(
-            font_color.0,
-            match font_color.0 {
-                "k" => vec![
-                    font_color.1.into(),
-                    font_color.2.into(),
-                    font_color.3.into(),
-                    font_color.4.into(),
-                ],
-                "rg" => vec![
-                    font_color.1.into(),
-                    font_color.2.into(),
-                    font_color.3.into(),
-                ],
-                _ => vec![font_color.1.into()],
-            },
-        ));
-
-        let x = 2.0;
-        let dy = rect[1] - rect[3];
-        let y = if dy > 0.0 {
-            0.5 * dy - 0.4 * font_size as f32
-        } else {
-            0.5 * font_size as f32
-        };
-
-        content.operations.push(Operation::new(
-            "Tm",
-            vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
-        ));
-
-        let string_obj = match value {
-            Object::Reference(id) => match self.doc.get_object(id)? {
-                Object::String(bytes, format) => Object::String(bytes.clone(), *format),
-                _ => {
-                    return Err(lopdf::Error::DictKey(
-                        "Expected string behind /V reference".into(),
-                    ));
+            .find_map(|(id, obj)| match obj {
+                Object::Dictionary(d)
+                    if d.get(b"Type")
+                        .ok()
+                        .map_or(false, |t| t.as_name().ok() == Some(b"Font")) =>
+                {
+                    Some(*id)
                 }
-            },
-            Object::String(_, _) => value.clone(),
-            _ => {
-                return Err(lopdf::Error::DictKey(
-                    "Expected /V to be string or ref to string".into(),
-                ));
-            }
-        };
+                _ => None,
+            })
+            .ok_or_else(|| lopdf::Error::DictKey("Missing font resource".into()))?;
 
-        content
-            .operations
-            .push(Operation::new("Tj", vec![string_obj]));
+        for widget_id in widget_ids {
+            let widget = self
+                .doc
+                .objects
+                .get_mut(&widget_id)
+                .ok_or_else(|| lopdf::Error::DictKey("widget".into()))?
+                .as_dict_mut()?;
 
-        content.operations.push(Operation::new("ET", vec![]));
-        content.operations.push(Operation::new("Q", vec![]));
-        content.operations.push(Operation::new("EMC", vec![]));
+            let rect = widget
+                .get(b"Rect")?
+                .as_array()?
+                .iter()
+                .map(|o| o.as_f32().unwrap_or(0.0))
+                .collect::<Vec<_>>();
 
-        let appearance_stream = lopdf::Stream::new(
-            dictionary! {
-                "Subtype" => "Form",
-                "Type" => "XObject",
-                "BBox" => lopdf::Object::Array(rect.iter().copied().map(|f| f.into()).collect()),
-                "Resources" => lopdf::dictionary! {}, // could inherit from AcroForm later
-            },
-            content.encode()?,
-        );
+            let width = rect[2] - rect[0];
+            let height = rect[3] - rect[1];
 
-        let stream_id = self.doc.add_object(appearance_stream);
+            let font_size = 11.0;
 
-        if let Some(Object::Dictionary(field_dict)) = self.doc.objects.get_mut(&field_id) {
-            field_dict.set(
-                "AP",
-                dictionary! {
-                    "N" => Object::Reference(stream_id),
-                },
+            let stream = format!(
+                "q BT /F1 {} Tf 0 g 2 {} Td ({}) Tj ET Q",
+                font_size,
+                (height / 2.0) - font_size / 2.0,
+                escape_pdf_text(&value.to_owned().unwrap_or_else(String::new))
             );
-            field_dict.set("AS", Object::Name(b"N".to_vec()));
+
+            let resources = dictionary! {
+                "Font" => dictionary! {
+                    b"F1" => font_ref,
+                }
+            };
+
+            let ap_stream = lopdf::Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Form",
+                    "BBox" => vec![0.0.into(), 0.0.into(), width.into(), height.into()],
+                    "Resources" => Object::Dictionary(resources),
+                },
+                stream.as_bytes().to_vec(),
+            );
+
+            // Drop mutable borrow of `widget` before mutably accessing `self.doc.objects`
+            let widget_id_for_set = widget_id;
+
+            // Now it's safe to insert
+            let new_id = self
+                .doc
+                .max_id
+                .checked_add(1)
+                .expect("PDF object ID overflow");
+            self.doc.max_id = new_id;
+            self.doc
+                .objects
+                .insert((new_id, 0), Object::Stream(ap_stream));
+            let appearance_id = Object::Reference((new_id, 0));
+
+            // Set `AP` on widget again
+            let widget = self
+                .doc
+                .objects
+                .get_mut(&widget_id_for_set)
+                .ok_or_else(|| lopdf::Error::DictKey("widget reborrow".into()))?
+                .as_dict_mut()?;
+
+            widget.set(
+                "AP",
+                Object::Dictionary(dictionary! {
+                    "N" => appearance_id
+                }),
+            );
         }
 
         Ok(())

@@ -132,12 +132,6 @@ pub fn decode_pdf_string(obj: &Object) -> Option<String> {
     decode_text_string(obj).ok()
 }
 
-// HACK: Convert str into object, then decode object.
-pub fn decode_pdf_string_from_str(s: &str) -> Option<String> {
-    let obj = encode_pdf_string(s);
-    decode_pdf_string(&obj)
-}
-
 // HACK: Convert bytes into object, then decode object.
 pub fn decode_pdf_string_from_bytes(bytes: &[u8]) -> Option<String> {
     let s = bytes.to_vec();
@@ -155,4 +149,11 @@ pub fn decode_pdf_string_from_bytes(bytes: &[u8]) -> Option<String> {
 
 pub fn encode_pdf_string(value: &str) -> Object {
     text_string(value)
+}
+
+pub fn escape_pdf_text(input: &str) -> String {
+    input
+        .replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
 }
