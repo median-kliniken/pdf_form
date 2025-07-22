@@ -322,7 +322,7 @@ impl Form {
                     },
                     // The options is an array of either text elements or arrays where the second
                     // element is what we want
-                    options: match self.find_opt_in_kids(&field) {
+                    options: match self.find_opt_in_kids_or_parents(&field) {
                         Some(&Object::Array(ref options)) => options
                             .iter()
                             .map(|x| match *x {
@@ -370,7 +370,7 @@ impl Form {
                 },
                 // The options is an array of either text elements or arrays where the second
                 // element is what we want
-                options: match self.find_opt_in_kids(&field) {
+                options: match self.find_opt_in_kids_or_parents(&field) {
                     Some(&Object::Array(ref options)) => options
                         .iter()
                         .map(|x| match *x {
@@ -413,6 +413,17 @@ impl Form {
         }
     }
 
+    fn find_opt_in_kids_or_parents<'a>(
+        &'a self,
+        field: &'a Dictionary,
+    ) -> Option<&'a Object> {
+        if let Some(result) = self.find_opt_in_kids(field) {
+            Some(result)
+        } else {
+            self.find_opt_in_parents(field)
+        }
+    }
+
     fn find_opt_in_kids<'a>(
         &'a self,
         field: &'a Dictionary,
@@ -433,6 +444,35 @@ impl Form {
                         }
                     }
                 }
+            }
+        }
+
+        None
+    }
+
+    fn find_opt_in_parents<'a>(
+        &'a self,
+        field: &'a Dictionary,
+    ) -> Option<&'a Object> {
+        // Look in self first
+        if let Ok(opt) = field.get(b"Opt") {
+            return Some(opt);
+        }
+
+        // Finally: walk up /Parent chain
+        let mut current = field;
+        while let Ok(Object::Reference(parent_id)) = current.get(b"Parent") {
+            if let Ok(parent_obj) = self.doc.get_object(*parent_id) {
+                if let Ok(parent_dict) = parent_obj.as_dict() {
+                    if let Ok(opt) = parent_dict.get(b"Opt") {
+                        return Some(opt);
+                    }
+                    current = parent_dict;
+                } else {
+                    break;
+                }
+            } else {
+                break;
             }
         }
 
