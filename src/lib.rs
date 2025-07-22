@@ -926,7 +926,8 @@ impl Form {
                         field.remove(b"AP");
                     }
 
-                    // self.regenerate_choice_appearance(n).map_err(|_| ValueError::InvalidSelection)?;
+                    self.regenerate_choice_appearance(n)
+                        .map_err(|_| ValueError::InvalidSelection)?;
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
@@ -1090,6 +1091,7 @@ impl Form {
             })
             .ok_or_else(|| lopdf::Error::DictKey("Missing font resource".into()))?;
 
+        let da_string = field.get(b"DA")?.clone();
         for widget_id in widget_ids {
             let widget = self
                 .doc
@@ -1097,6 +1099,9 @@ impl Form {
                 .get_mut(&widget_id)
                 .ok_or_else(|| lopdf::Error::DictKey("widget".into()))?
                 .as_dict_mut()?;
+
+            widget.set("DA", da_string.clone());
+            widget.set("AS", Object::Name(b"N".to_vec()));
 
             let rect = widget
                 .get(b"Rect")?
