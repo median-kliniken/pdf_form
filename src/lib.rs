@@ -782,17 +782,15 @@ impl Form {
                 options, editable, ..
             } => {
                 if options.contains(&choice) || editable {
-                    // Inline the string directly in PDFDocEncoding
-                    let value_obj = Object::String(choice.as_bytes().to_vec(), lopdf::StringFormat::Literal);
-
-                    // Set /V and /DV directly, removing old AP
+                    let value_obj = encode_pdf_string(&choice);
+                    
                     if let Some(Object::Dictionary(field)) = self.doc.objects.get_mut(&self.form_ids[n]) {
                         field.set("V", value_obj.clone());
                         field.set("DV", value_obj);
                         field.remove(b"AP");
                     }
 
-                    self.regenerate_choice_appearance(n).map_err(|_| ValueError::InvalidSelection)?;
+                    // self.regenerate_choice_appearance(n).map_err(|_| ValueError::InvalidSelection)?;
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
