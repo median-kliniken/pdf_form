@@ -788,7 +788,7 @@ impl Form {
                         .unwrap();
                     field.set(
                         "V",
-                        Object::Array(vec![encode_pdf_string(&choice)])
+                        encode_pdf_string(&choice)
                     );
                     Ok(())
                 } else {
