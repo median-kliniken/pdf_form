@@ -758,6 +758,10 @@ impl Form {
                                 ),
                             ),
                         };
+
+                        // Regenerate text appearance conforming the new text but ignore the result
+                        let _ = self.regenerate_text_appearance(n);
+
                         Ok(())
                     }
                 } else {
@@ -790,6 +794,10 @@ impl Form {
                         "V",
                         encode_pdf_string(&choice)
                     );
+
+                    // Regenerate text appearance conforming the new text but ignore the result
+                    let _ = self.regenerate_text_appearance(n);
+
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
