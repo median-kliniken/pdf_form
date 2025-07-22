@@ -1,14 +1,14 @@
 mod utils;
 
+use derive_error::Error;
+use lopdf::content::{Content, Operation};
+use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
 use std::collections::VecDeque;
 use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::str;
 use std::str::from_utf8;
-use derive_error::Error;
-use lopdf::content::{Content, Operation};
-use lopdf::{Document, Object, ObjectId, StringFormat};
 
 use crate::utils::*;
 
@@ -264,11 +264,13 @@ impl Form {
     /// # Panics
     /// This function will panic if the index is greater than the number of fields
     pub fn get_state(&self, n: usize) -> FieldState {
-        let field = self
+        let object = self
             .doc
             .objects
             .get(&self.form_ids[n])
-            .unwrap()
+            .unwrap();
+
+        let field = object
             .as_dict()
             .unwrap();
         match self.get_type(n) {
@@ -296,63 +298,61 @@ impl Form {
                 readonly: is_read_only(field),
                 required: is_required(field),
             },
-            FieldType::ListBox => FieldState::ListBox {
-                // V field in a list box can be either text for one option, an array for many
-                // options, or null
-                selected: match field.get(b"V") {
-                    Ok(selection) => match *selection {
-                        Object::String(ref s, StringFormat::Literal) => {
-                            vec![str::from_utf8(&s).unwrap().to_owned()]
-                        }
-                        Object::Array(ref chosen) => {
-                            let mut res = Vec::new();
-                            for obj in chosen {
-                                if let Object::String(ref s, StringFormat::Literal) = *obj {
-                                    res.push(str::from_utf8(&s).unwrap().to_owned());
-                                }
+            FieldType::ListBox => {
+                FieldState::ListBox {
+                    // V field in a list box can be either text for one option, an array for many
+                    // options, or null
+                    selected: match field.get(b"V") {
+                        Ok(selection) => match *selection {
+                            Object::String(ref s, StringFormat::Literal) => {
+                                vec![str::from_utf8(&s).unwrap().to_owned()]
                             }
-                            res
-                        }
+                            Object::Array(ref chosen) => {
+                                let mut res = Vec::new();
+                                for obj in chosen {
+                                    if let Object::String(ref s, StringFormat::Literal) = *obj {
+                                        res.push(str::from_utf8(&s).unwrap().to_owned());
+                                    }
+                                }
+                                res
+                            }
+                            _ => Vec::new(),
+                        },
                         _ => Vec::new(),
                     },
-                    _ => Vec::new(),
-                },
-                // The options is an array of either text elements or arrays where the second
-                // element is what we want
-                options: match field.get(b"Opt") {
-                    Ok(object) => {
-                        match object {
-                            Object::Array(ref options) => {
-                                options
-                                    .iter()
-                                    .map(|x| match *x {
-                                        Object::String(ref s, StringFormat::Literal) => {
-                                            from_utf8(&s).unwrap().to_owned()
-                                        }
-                                        Object::Array(ref arr) => {
-                                            if let Object::String(ref s, StringFormat::Literal) = &arr[1] {
-                                                from_utf8(&s).unwrap().to_owned()
-                                            } else {
-                                                String::new()
-                                            }
-                                        }
-                                        _ => String::new(),
-                                    })
-                                    .filter(|x| !x.is_empty())
-                                    .collect()
-                            }
-                            _ => Vec::new()
-                        }
-                    }
-                    Err(_) => Vec::new(),
-                },
-                multiselect: {
-                    let flags = ChoiceFlags::from_bits_truncate(get_field_flags(field));
-                    flags.intersects(ChoiceFlags::MULTISELECT)
-                },
-                readonly: is_read_only(field),
-                required: is_required(field),
-            },
+                    // The options is an array of either text elements or arrays where the second
+                    // element is what we want
+                    options: match self.find_opt_in_kids(&field) {
+                        Some(&Object::Array(ref options)) => options
+                            .iter()
+                            .map(|x| match *x {
+                                Object::String(ref s, StringFormat::Literal) => {
+                                    from_utf8(&s).unwrap().to_owned()
+                                }
+                                Object::Array(ref arr) => {
+                                    if let Object::String(ref s, StringFormat::Literal) =
+                                        &arr[1]
+                                    {
+                                        String::from_utf8_lossy(&s).to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                }
+                                _ => String::new(),
+                            })
+                            .filter(|x| !x.is_empty())
+                            .collect(),
+                        Some(_) => Vec::new(),
+                        None => Vec::new()
+                    },
+                    multiselect: {
+                        let flags = ChoiceFlags::from_bits_truncate(get_field_flags(field));
+                        flags.intersects(ChoiceFlags::MULTISELECT)
+                    },
+                    readonly: is_read_only(field),
+                    required: is_required(field),
+                }
+            }
             FieldType::ComboBox => FieldState::ComboBox {
                 // V field in a list box can be either text for one option, an array for many
                 // options, or null
@@ -418,6 +418,32 @@ impl Form {
         }
     }
 
+    fn find_opt_in_kids<'a>(
+        &'a self,
+        field: &'a Dictionary,
+    ) -> Option<&'a Object> {
+        // Look in self first
+        if let Ok(opt) = field.get(b"Opt") {
+            return Some(opt);
+        }
+
+        // Otherwise: look in /Kids
+        let kids = field.get(b"Kids").ok()?.as_array().ok()?;
+        for kid_ref in kids {
+            if let Ok(kid_id) = kid_ref.as_reference() {
+                if let Ok(kid_obj) = self.doc.get_object(kid_id) {
+                    if let Ok(kid_dict) = kid_obj.as_dict() {
+                        if let Ok(opt) = kid_dict.get(b"Opt") {
+                            return Some(opt);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// If the field at index `n` is a text field, fills in that field with the text `s`.
     /// If it is not a text field, returns ValueError
     ///
@@ -455,7 +481,8 @@ impl Form {
     ///
     /// A more sophisticated parser is needed here
     fn regenerate_text_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
-        if let Ok(Object::Dictionary(ref mut acroform)) = self.doc.get_object_mut(self.form_ids[n]) {
+        if let Ok(Object::Dictionary(ref mut acroform)) = self.doc.get_object_mut(self.form_ids[n])
+        {
             acroform.set("NeedAppearances", Object::Boolean(true));
             acroform.remove(b"AP");
         }
@@ -468,7 +495,6 @@ impl Form {
                 .as_dict()
                 .unwrap()
         };
-
 
         // The value of the object (should be a string)
         let value = field.get(b"V")?.to_owned();
@@ -519,7 +545,9 @@ impl Form {
         ]);
 
         let font = parse_font(match da {
-            Object::String(ref bytes, _) => Some(from_utf8(bytes).map_err(|_err| lopdf::Error::TextStringDecode)?),
+            Object::String(ref bytes, _) => {
+                Some(from_utf8(bytes).map_err(|_err| lopdf::Error::TextStringDecode)?)
+            }
             _ => None,
         });
 
