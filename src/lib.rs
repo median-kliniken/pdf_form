@@ -256,7 +256,7 @@ impl Form {
 
         // The "T" key refers to the name of the field
         match field.get(b"T") {
-            Ok(Object::String(data, _)) => String::from_utf8(data.clone()).ok(),
+            Ok(obj) => decode_pdf_string(obj),
             _ => None,
         }
     }
