@@ -330,13 +330,7 @@ impl Form {
                                     from_utf8(&s).unwrap().to_owned()
                                 }
                                 Object::Array(ref arr) => {
-                                    if let Object::String(ref s, StringFormat::Literal) =
-                                        &arr[1]
-                                    {
-                                        String::from_utf8_lossy(&s).to_string()
-                                    } else {
-                                        String::new()
-                                    }
+                                    Self::decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
                                 }
                                 _ => String::new(),
                             })
@@ -442,6 +436,26 @@ impl Form {
         }
 
         None
+    }
+
+    fn decode_pdf_string(obj: &Object) -> Option<String> {
+        match obj {
+            Object::String(bytes, StringFormat::Literal) |
+            Object::String(bytes, StringFormat::Hexadecimal) => {
+                // UTF-16BE if BOM exists
+                if bytes.starts_with(&[0xFE, 0xFF]) {
+                    let utf16: Vec<u16> = bytes[2..]
+                        .chunks(2)
+                        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                        .collect();
+                    String::from_utf16(&utf16).ok()
+                } else {
+                    // Otherwise: try PDFDocEncoding (not natively supported)
+                    Some(String::from_utf8_lossy(bytes).to_string())
+                }
+            }
+            _ => None,
+        }
     }
 
     /// If the field at index `n` is a text field, fills in that field with the text `s`.
