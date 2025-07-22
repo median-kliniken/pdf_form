@@ -429,7 +429,7 @@ impl Form {
         field: &'a Dictionary,
     ) -> Option<&'a Object> {
         // Look in self first
-        if let Ok(opt) = field.get(b"Opt") {
+        if let Some(opt) = self.get_resolved_opt(field) {
             return Some(opt);
         }
 
@@ -439,7 +439,7 @@ impl Form {
             if let Ok(kid_id) = kid_ref.as_reference() {
                 if let Ok(kid_obj) = self.doc.get_object(kid_id) {
                     if let Ok(kid_dict) = kid_obj.as_dict() {
-                        if let Ok(opt) = kid_dict.get(b"Opt") {
+                        if let Some(opt) = self.get_resolved_opt(kid_dict) {
                             return Some(opt);
                         }
                     }
@@ -455,7 +455,7 @@ impl Form {
         field: &'a Dictionary,
     ) -> Option<&'a Object> {
         // Look in self first
-        if let Ok(opt) = field.get(b"Opt") {
+        if let Some(opt) = self.get_resolved_opt(field) {
             return Some(opt);
         }
 
@@ -464,7 +464,7 @@ impl Form {
         while let Ok(Object::Reference(parent_id)) = current.get(b"Parent") {
             if let Ok(parent_obj) = self.doc.get_object(*parent_id) {
                 if let Ok(parent_dict) = parent_obj.as_dict() {
-                    if let Ok(opt) = parent_dict.get(b"Opt") {
+                    if let Some(opt) = self.get_resolved_opt(parent_dict) {
                         return Some(opt);
                     }
                     current = parent_dict;
@@ -477,6 +477,16 @@ impl Form {
         }
 
         None
+    }
+
+    fn get_resolved_opt<'a>(&'a self, dict: &'a Dictionary) -> Option<&Object> {
+        let opt_obj = dict.get(b"Opt").ok()?;
+
+        match opt_obj {
+            Object::Array(_) => Some(opt_obj),
+            Object::Reference(obj_id) => self.doc.get_object(*obj_id).ok(),
+            _ => None,
+        }
     }
 
     /// If the field at index `n` is a text field, fills in that field with the text `s`.
