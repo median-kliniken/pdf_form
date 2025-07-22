@@ -326,7 +326,7 @@ impl Form {
                         Some(&Object::Array(ref options)) => options
                             .iter()
                             .map(|x| match *x {
-                                Object::String(ref s, StringFormat::Literal) => {
+                                Object::String(..) => {
                                     decode_pdf_string(x).unwrap_or_else(String::new)
                                 }
                                 Object::Array(ref arr) => {
@@ -352,8 +352,8 @@ impl Form {
                 // options, or null
                 selected: match field.get(b"V") {
                     Ok(selection) => match *selection {
-                        Object::String(ref s, StringFormat::Literal) => {
-                            vec![str::from_utf8(&s).unwrap().to_owned()]
+                        Object::String(..) => {
+                            vec![decode_pdf_string(selection).unwrap_or_else(String::new)]
                         }
                         Object::Array(ref chosen) => {
                             let mut res = Vec::new();
@@ -374,12 +374,12 @@ impl Form {
                     Some(&Object::Array(ref options)) => options
                         .iter()
                         .map(|x| match *x {
-                            Object::String(ref s, StringFormat::Literal) => {
-                                str::from_utf8(&s).unwrap().to_owned()
+                            Object::String(..) => {
+                                decode_pdf_string(x).unwrap_or_else(String::new)
                             }
                             Object::Array(ref arr) => {
-                                if let Object::String(ref s, StringFormat::Literal) = &arr[1] {
-                                    str::from_utf8(&s).unwrap().to_owned()
+                                if let Object::String(..) = &arr[1] {
+                                    decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
                                 } else {
                                     String::new()
                                 }
@@ -401,8 +401,8 @@ impl Form {
             },
             FieldType::Text => FieldState::Text {
                 text: match field.get(b"V") {
-                    Ok(&Object::String(ref s, StringFormat::Literal)) => {
-                        str::from_utf8(&s.clone()).unwrap().to_owned()
+                    Ok(object) => {
+                        decode_pdf_string(object).unwrap_or_else(String::new)
                     }
                     _ => "".to_owned(),
                 },
