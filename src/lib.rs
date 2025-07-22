@@ -319,8 +319,10 @@ impl Form {
                                                         .unwrap_or(false);
                                                     checkboxes.push(SingleCheckboxState {
                                                         widget_id: kid_id,
-                                                        on_value: String::from_utf8_lossy(name)
-                                                            .into(),
+                                                        on_value: decode_pdf_string_from_bytes(
+                                                            name,
+                                                        )
+                                                        .unwrap_or_else(String::new),
                                                         is_checked,
                                                         readonly: is_read_only(widget),
                                                         required: is_required(widget),
@@ -747,8 +749,8 @@ impl Form {
     ) -> Result<(), ValueError> {
         let field_id = self.form_ids[n];
 
-        // Extract kids BEFORE mutable borrow
-        let kids = self
+        // Clone kids list
+        let kids: Option<Vec<Object>> = self
             .doc
             .objects
             .get(&field_id)
@@ -758,25 +760,31 @@ impl Form {
             .map(|arr| arr.clone());
 
         if let Some(kids) = kids {
-            // Now safe to borrow mutably
+            let mut matched = false;
+
             for kid_ref in kids {
                 if let Ok(kid_id) = kid_ref.as_reference() {
                     if let Ok(widget_obj) = self.doc.get_object_mut(kid_id) {
                         if let Ok(widget) = widget_obj.as_dict_mut() {
                             if let Ok(ap) = widget.get(b"AP").and_then(|o| o.as_dict()) {
                                 if let Ok(n_dict) = ap.get(b"N").and_then(|o| o.as_dict()) {
+                                    let mut new_state = None;
+
                                     for (name, _) in n_dict.iter() {
-                                        if let Ok(name_str) = std::str::from_utf8(name) {
+                                        if let Some(name_str) = decode_pdf_string_from_bytes(name) {
                                             if name_str == value {
-                                                let state = if is_checked {
+                                                new_state = Some(if is_checked {
+                                                    matched = true;
                                                     Object::Name(name.to_vec())
                                                 } else {
                                                     Object::Name(b"Off".to_vec())
-                                                };
-                                                widget.set("AS", state);
-                                                return Ok(());
+                                                });
                                             }
                                         }
+                                    }
+
+                                    if let Some(state) = new_state {
+                                        widget.set("AS", state);
                                     }
                                 }
                             }
@@ -785,9 +793,24 @@ impl Form {
                 }
             }
 
-            Err(ValueError::UnknownOption)
+            if matched {
+                // optional: update /V to the currently selected value
+                let field = self
+                    .doc
+                    .objects
+                    .get_mut(&field_id)
+                    .unwrap()
+                    .as_dict_mut()
+                    .unwrap();
+                if is_checked {
+                    field.set("V", Object::Name(value.as_bytes().to_vec()));
+                }
+                Ok(())
+            } else {
+                Err(ValueError::UnknownOption)
+            }
         } else {
-            // Now safe to mutably access `field`
+            // Single checkbox fallback
             let field = self
                 .doc
                 .objects

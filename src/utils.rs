@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{decode_text_string, text_string, Dictionary, Object};
+use lopdf::{decode_text_string, text_string, Dictionary, Object, StringFormat};
 
 use crate::from_utf8;
 
@@ -59,6 +59,7 @@ pub fn get_on_value(field: &Dictionary) -> String {
                 if let Ok(options) = values.as_dict() {
                     for (name, _) in options {
                         if let Ok(name) = from_utf8(name) {
+                            // TODO: Fix this
                             if name != "Off" && option.is_none() {
                                 option = Some(name.into());
                             }
@@ -129,6 +130,25 @@ pub fn parse_font(font_string: Option<&str>) -> ((&str, i32), (&str, i32, i32, i
 
 pub fn decode_pdf_string(obj: &Object) -> Option<String> {
     decode_text_string(obj).ok()
+}
+
+pub fn decode_pdf_string_from_str(s: &str) -> Option<String> {
+    let obj = encode_pdf_string(s);
+    decode_pdf_string(&obj)
+}
+
+pub fn decode_pdf_string_from_bytes(bytes: &[u8]) -> Option<String> {
+    let s = bytes.to_vec();
+    if s.starts_with(b"\xFE\xFF") {
+        let obj = Object::String(s, StringFormat::Hexadecimal);
+        decode_pdf_string(&obj)
+    } else if s.starts_with(b"\xEF\xBB\xBF") {
+        String::from_utf8(s).ok()
+    } else {
+        // If neither BOM is detected, PDFDocEncoding is used
+        let obj = Object::String(s, StringFormat::Literal);
+        decode_pdf_string(&obj)
+    }
 }
 
 pub fn encode_pdf_string(value: &str) -> Object {
