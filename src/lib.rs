@@ -779,17 +779,7 @@ impl Form {
                 options, editable, ..
             } => {
                 if options.contains(&choice) || editable {
-                    let field = self
-                        .doc
-                        .objects
-                        .get_mut(&self.form_ids[n])
-                        .unwrap()
-                        .as_dict_mut()
-                        .unwrap();
-                    field.set(
-                        "V",
-                        encode_pdf_string(&choice)
-                    );
+                    self.set_pdf_field_object(self.form_ids[n], encode_pdf_string(&choice), false);
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
@@ -846,4 +836,39 @@ impl Form {
 
         res
     }
+
+    pub fn set_pdf_field_object(
+        &mut self,
+        field_dict_obj_id: ObjectId,
+        value: Object,
+        update_default: bool,
+    ) {
+        // First: resolve the field dict from the document
+        let mut update_ref = None;
+
+        if let Some(field_obj) = self.doc.objects.get(&field_dict_obj_id) {
+            if let Ok(field_dict) = field_obj.as_dict() {
+                if let Ok(&Object::Reference(val_ref)) = field_dict.get(b"V") {
+                    update_ref = Some(val_ref);
+                }
+            }
+        }
+
+        // If /V is a reference, update the referenced object
+        if let Some(val_ref) = update_ref {
+            if let Some(obj) = self.doc.objects.get_mut(&val_ref) {
+                *obj = value.clone();
+                return;
+            }
+        }
+
+        // Fallback: directly set /V and optionally /DV in the field dictionary
+        if let Some(Object::Dictionary(field_dict)) = self.doc.objects.get_mut(&field_dict_obj_id) {
+            field_dict.set("V", value.clone());
+            if update_default {
+                field_dict.set("DV", value);
+            }
+        }
+    }
+
 }
