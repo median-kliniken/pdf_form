@@ -779,7 +779,7 @@ impl Form {
                 options, editable, ..
             } => {
                 if options.contains(&choice) || editable {
-                    self.set_pdf_field_object(self.form_ids[n], encode_pdf_string(&choice), false);
+                    self.set_pdf_field_object(self.form_ids[n], encode_pdf_string(&choice), true);
                     Ok(())
                 } else {
                     Err(ValueError::InvalidSelection)
