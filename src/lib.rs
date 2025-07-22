@@ -370,8 +370,8 @@ impl Form {
                 },
                 // The options is an array of either text elements or arrays where the second
                 // element is what we want
-                options: match field.get(b"Opt") {
-                    Ok(&Object::Array(ref options)) => options
+                options: match self.find_opt_in_kids(&field) {
+                    Some(&Object::Array(ref options)) => options
                         .iter()
                         .map(|x| match *x {
                             Object::String(ref s, StringFormat::Literal) => {
@@ -388,7 +388,8 @@ impl Form {
                         })
                         .filter(|x| !x.is_empty())
                         .collect(),
-                    _ => Vec::new(),
+                    Some(_) => Vec::new(),
+                    None => Vec::new(),
                 },
                 editable: {
                     let flags = ChoiceFlags::from_bits_truncate(get_field_flags(field));
