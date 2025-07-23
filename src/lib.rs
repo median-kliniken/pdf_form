@@ -744,39 +744,55 @@ impl Form {
         let bbox_width = rect[2] - rect[0];
         let bbox_height = rect[3] - rect[1];
 
-        let ascent = font_size * 0.8;
-        let baseline_y = bbox_height - ascent;
+        let ascent = font_size * 1.0;
+        let line_height = font_size * 1.2;
+
+        let padding_x = 2.0; // or bbox_width * 0.03;
 
         if max_len > 0 {
-            let cell_width = bbox_width / (max_len as f32);
+            // --- Cell-layout (single line, left-aligned, vertical center) ---
+            let cell_width = bbox_width / max_len as f32;
+            let baseline_y = (bbox_height + line_height) / 2.0 - ascent;
 
             for (i, ch) in text.chars().take(max_len).enumerate() {
-                let center_x = (i as f32 + 0.5) * cell_width;
+                // instead of aligning to left of cell, offset to center
+                let cell_center_x = (i as f32 + 0.5) * cell_width;
+                let x = cell_center_x - font_size * 0.25; // 0.25 ≈ half of avg glyph width in em
 
-                ops.push(Operation::new("Tm", vec![
-                    1.into(), 0.into(), 0.into(), 1.into(),
-                    center_x.into(), baseline_y.into(),
-                ]));
+                ops.push(Operation::new(
+                    "Tm",
+                    vec![
+                        1.into(),
+                        0.into(),
+                        0.into(),
+                        1.into(),
+                        x.into(),
+                        baseline_y.into(),
+                    ],
+                ));
 
                 let encoded = encode_text_for_pdf(&ch.to_string(), font_encoding.as_deref());
                 ops.push(Operation::new("Tj", vec![encoded]));
             }
         } else {
-            // Fallback to normal multiline logic
-            let line_height = font_size * 1.2;
-            for (i, line) in text.split('\n').enumerate() {
-                let line_y = bbox_height - ascent - (i as f32) * line_height;
+            // --- Multiline layout (left-aligned, vertical center) ---
+            let lines: Vec<&str> = text.split('\n').collect();
+            let block_height = lines.len() as f32 * line_height;
+            let first_baseline_y = (bbox_height + block_height) / 2.0 - ascent;
 
-                ops.push(Operation::new("Tm", vec![
-                    1.into(), 0.into(), 0.into(), 1.into(),
-                    x.into(), line_y.into(),
-                ]));
+            for (i, line) in lines.iter().enumerate() {
+                let y = first_baseline_y - (i as f32) * line_height;
+                let x = padding_x;
+
+                ops.push(Operation::new(
+                    "Tm",
+                    vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
+                ));
 
                 let encoded = encode_text_for_pdf(line, font_encoding.as_deref());
                 ops.push(Operation::new("Tj", vec![encoded]));
             }
         }
-
 
         ops.extend([Operation::new("ET", vec![]), Operation::new("Q", vec![])]);
 
