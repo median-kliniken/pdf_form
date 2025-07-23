@@ -3,13 +3,12 @@ mod utils;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
 use lopdf::dictionary;
-use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
+use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::str;
-use std::str::from_utf8;
 
 use crate::utils::*;
 
@@ -368,8 +367,8 @@ impl Form {
                     // options, or null
                     selected: match field.get(b"V") {
                         Ok(selection) => match *selection {
-                            Object::String(ref s, StringFormat::Literal) => {
-                                vec![str::from_utf8(&s).unwrap().to_owned()]
+                            Object::String(..) => {
+                                vec![decode_pdf_string(selection).unwrap_or_else(String::new)]
                             }
                             Object::Array(ref chosen) => {
                                 let mut res = Vec::new();
@@ -552,11 +551,11 @@ impl Form {
         values
     }
 
-    fn extract_checkbox_appearances(field: &lopdf::Dictionary, values: &mut Vec<String>) {
+    fn extract_checkbox_appearances(field: &Dictionary, values: &mut Vec<String>) {
         if let Ok(ap_dict) = field.get(b"AP").and_then(|o| o.as_dict()) {
             if let Ok(n_dict) = ap_dict.get(b"N").and_then(|o| o.as_dict()) {
                 for (name, _) in n_dict.iter() {
-                    if let Ok(name_str) = std::str::from_utf8(name) {
+                    if let Some(name_str) = decode_pdf_string_from_bytes(name) {
                         if name_str != "Off" && !values.contains(&name_str.to_string()) {
                             values.push(name_str.to_string());
                         }
@@ -677,7 +676,8 @@ impl Form {
 
         let font = parse_font(match da {
             Object::String(ref bytes, _) => {
-                Some(from_utf8(bytes).map_err(|_err| lopdf::Error::TextStringDecode)?)
+                // cannot use decode_pdf_bytes due to lifetimes
+                Some(str::from_utf8(bytes).map_err(|_err| lopdf::Error::TextStringDecode)?)
             }
             _ => None,
         });
@@ -968,7 +968,9 @@ impl Form {
                     {
                         for (key, _) in normal_appearance {
                             if key != b"Off" {
-                                res.push(from_utf8(key).unwrap_or("").to_owned());
+                                res.push(
+                                    decode_pdf_string_from_bytes(key).unwrap_or_else(String::new),
+                                );
                                 found = true;
                                 break;
                             }

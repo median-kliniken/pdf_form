@@ -1,7 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{Dictionary, Object, StringFormat, decode_text_string, text_string};
-
-use crate::from_utf8;
+use lopdf::{decode_text_string, text_string, Dictionary, Object, StringFormat};
 
 bitflags! {
     pub struct FieldFlags: u32 {
@@ -58,7 +56,7 @@ pub fn get_on_value(field: &Dictionary) -> String {
             if let Ok(values) = dict.get(b"N") {
                 if let Ok(options) = values.as_dict() {
                     for (name, _) in options {
-                        if let Ok(name) = from_utf8(name) {
+                        if let Some(name) = decode_pdf_string_from_bytes(name) {
                             // TODO: Fix this
                             if name != "Off" && option.is_none() {
                                 option = Some(name.into());
