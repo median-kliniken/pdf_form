@@ -768,7 +768,7 @@ impl Form {
             .map(|arr| arr.clone());
 
         if let Some(kids) = kids {
-            let mut matched = false;
+            let mut matched = None;
 
             for kid_ref in kids {
                 if let Ok(kid_id) = kid_ref.as_reference() {
@@ -781,7 +781,7 @@ impl Form {
                                     for (name, _) in n_dict.iter() {
                                         if let Some(name_str) = decode_pdf_string_from_bytes(name) {
                                             if name_str == value {
-                                                matched = true;
+                                                matched = Some(name.to_vec());
                                                 new_state = Some(if is_checked {
                                                     Object::Name(name.to_vec())
                                                 } else {
@@ -801,7 +801,7 @@ impl Form {
                 }
             }
 
-            if matched {
+            if let Some(name) = matched {
                 // optional: update /V to the currently selected value
                 let field = self
                     .doc
@@ -811,7 +811,7 @@ impl Form {
                     .as_dict_mut()
                     .unwrap();
                 if is_checked {
-                    field.set("V", Object::Name(value.as_bytes().to_vec()));
+                    field.set("V", Object::Name(name));
                 }
                 Ok(())
             } else {
