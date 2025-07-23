@@ -182,3 +182,20 @@ pub fn encode_text_for_pdf(text: &str, encoding: Option<&str>) -> Object {
         }
     }
 }
+
+pub fn get_max_len_from_widget_or_parent(doc: &lopdf::Document, widget: &Dictionary) -> usize {
+    // Try parent first
+    let parent_maxlen = widget
+        .get(b"Parent")
+        .ok()
+        .and_then(|p| p.as_reference().ok())
+        .and_then(|pid| doc.objects.get(&pid))
+        .and_then(|parent| parent.as_dict().ok())
+        .and_then(|dict| dict.get(b"MaxLen").ok())
+        .and_then(|o| o.as_i64().ok());
+
+    // Fallback to field itself
+    parent_maxlen
+        .or_else(|| widget.get(b"MaxLen").ok().and_then(|o| o.as_i64().ok()))
+        .unwrap_or(0) as usize
+}

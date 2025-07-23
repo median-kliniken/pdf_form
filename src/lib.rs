@@ -4,8 +4,8 @@ use crate::utils::*;
 use chrono::Local;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Stream};
 use lopdf::{Dictionary, Document, Object, ObjectId};
+use lopdf::{Stream, dictionary};
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Debug;
 use std::io;
@@ -703,15 +703,7 @@ impl Form {
         font_name = String::from_utf8_lossy(&resolved_name).to_string();
 
         let widget = self.doc.objects.get(&widget_id).unwrap().as_dict()?;
-        let max_len = widget
-            .get(b"Parent")
-            .ok()
-            .and_then(|p| p.as_reference().ok())
-            .and_then(|pid| self.doc.objects.get(&pid))
-            .and_then(|parent| parent.as_dict().ok())
-            .and_then(|dict| dict.get(b"MaxLen").ok())
-            .and_then(|o| o.as_i64().ok())
-            .unwrap_or(0) as usize;
+        let max_len = get_max_len_from_widget_or_parent(&self.doc, widget);
 
         let font_encoding = get_font_encoding(&self.doc, font_ref);
 
