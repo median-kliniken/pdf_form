@@ -4,8 +4,8 @@ use crate::utils::*;
 use chrono::Local;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
-use lopdf::{dictionary, Stream};
 use lopdf::{Dictionary, Document, Object, ObjectId};
+use lopdf::{Stream, dictionary};
 use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::io::Write;
@@ -743,28 +743,20 @@ impl Form {
 
         // Approximate vertical offset for baseline alignment
         let bbox_height = rect[3] - rect[1];
-        let top_y = bbox_height;
         let ascent = font_size * 0.8;
         let line_height = font_size * 1.2;
+        let top_y = bbox_height;
 
         for (i, line) in text.split('\n').enumerate() {
-            // Position baseline of line i:
-            let baseline_y = top_y - ascent - (i as f32) * line_height;
+            let y = top_y - ascent - (i as f32) * line_height;
 
-            let encoded_line = encode_text_for_pdf(line, font_encoding.as_deref());
+            ops.push(Operation::new("Tm", vec![
+                1.into(), 0.into(), 0.into(), 1.into(),
+                x.into(), y.into(),
+            ]));
 
-            ops.push(Operation::new(
-                "Tm",
-                vec![
-                    1.into(),
-                    0.into(),
-                    0.into(),
-                    1.into(),
-                    x.into(),
-                    baseline_y.into(),
-                ],
-            ));
-            ops.push(Operation::new("Tj", vec![encoded_line]));
+            let encoded = encode_text_for_pdf(line, font_encoding.as_deref());
+            ops.push(Operation::new("Tj", vec![encoded]));
         }
 
         ops.extend([Operation::new("ET", vec![]), Operation::new("Q", vec![])]);

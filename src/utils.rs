@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{decode_text_string, Dictionary, Object, ObjectId, StringFormat};
+use lopdf::{Dictionary, Object, ObjectId, StringFormat, decode_text_string};
 
 bitflags! {
     pub struct FieldFlags: u32 {
