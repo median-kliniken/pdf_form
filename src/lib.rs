@@ -4,8 +4,8 @@ use crate::utils::*;
 use chrono::Local;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
+use lopdf::{dictionary, Stream};
 use lopdf::{Dictionary, Document, Object, ObjectId};
-use lopdf::{Stream, dictionary};
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Debug;
 use std::io;
@@ -801,11 +801,6 @@ impl Form {
         let mut font_resources = Dictionary::new();
         font_resources.set(font_name.as_bytes().to_vec(), Object::Reference(font_ref));
 
-        // Ubuntu Document Viewer does this, but it should not be necessary.
-        let (helv_id, zadb_id) = Self::ensure_standard_fonts(&mut self.doc, None);
-        font_resources.set(b"Helv".to_vec(), Object::Reference(helv_id));
-        font_resources.set(b"ZaDb".to_vec(), Object::Reference(zadb_id));
-
         let resources: Dictionary = [(b"Font".to_vec(), Object::Dictionary(font_resources))]
             .into_iter()
             .collect();
@@ -1037,35 +1032,6 @@ impl Form {
             field.set("AS", state);
             Ok(())
         }
-    }
-
-    fn ensure_standard_fonts(
-        doc: &mut Document,
-        encoding_ref: Option<ObjectId>,
-    ) -> (ObjectId, ObjectId) {
-        // Helvetica ("Helv")
-        let mut helv_dict = Dictionary::from_iter([
-            (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
-            (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
-            (b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec())),
-            (b"Name".to_vec(), Object::Name(b"Helv".to_vec())),
-        ]);
-        if let Some(enc) = encoding_ref {
-            helv_dict.set("Encoding", Object::Reference(enc));
-        }
-
-        // ZapfDingbats ("ZaDb")
-        let zadb_dict = Dictionary::from_iter([
-            (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
-            (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
-            (b"BaseFont".to_vec(), Object::Name(b"ZapfDingbats".to_vec())),
-            (b"Name".to_vec(), Object::Name(b"ZaDb".to_vec())),
-        ]);
-
-        let helv_id = doc.add_object(Object::Dictionary(helv_dict));
-        let zadb_id = doc.add_object(Object::Dictionary(zadb_dict));
-
-        (helv_id, zadb_id)
     }
 
     /// If the field at index `n` is a radio field, toggles the radio button based on the value
