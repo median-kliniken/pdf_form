@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use lopdf::{Dictionary, Object, StringFormat, decode_text_string, text_string};
+use lopdf::{decode_text_string, Dictionary, Object, ObjectId, StringFormat};
 
 bitflags! {
     pub struct FieldFlags: u32 {
@@ -146,7 +146,7 @@ pub fn decode_pdf_string_from_bytes(bytes: &[u8]) -> Option<String> {
 }
 
 pub fn encode_pdf_string(value: &str) -> Object {
-    text_string(value)
+    encode_text_for_pdf(value, None)
 }
 
 pub fn escape_pdf_text(input: &str) -> String {
@@ -154,4 +154,38 @@ pub fn escape_pdf_text(input: &str) -> String {
         .replace("\\", "\\\\")
         .replace("(", "\\(")
         .replace(")", "\\)")
+}
+
+pub fn get_font_encoding(doc: &lopdf::Document, font_ref: ObjectId) -> Option<String> {
+    let font_dict = doc.get_object(font_ref).ok()?.as_dict().ok()?;
+    match font_dict.get(b"Encoding") {
+        Ok(Object::Name(name)) => Some(String::from_utf8_lossy(name).into()),
+        Ok(Object::Reference(id)) => doc
+            .get_object(*id)
+            .ok()
+            .and_then(|obj| obj.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).into()),
+        _ => None,
+    }
+}
+
+pub fn encode_text_for_pdf(text: &str, encoding: Option<&str>) -> Object {
+    match encoding {
+        Some("Identity-H") | None => {
+            // UTF-16BE with BOM
+            let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
+            let mut with_bom = vec![0xFE, 0xFF];
+            with_bom.extend(utf16);
+            Object::String(with_bom, StringFormat::Hexadecimal)
+        }
+        Some("WinAnsiEncoding") | Some("StandardEncoding") | Some("MacRomanEncoding") | _ => {
+            // Best-effort Latin-1 fallback
+            let bytes: Vec<u8> = text
+                .chars()
+                .map(|c| c as u32)
+                .map(|c| if c <= 0xFF { c as u8 } else { b'?' }) // Replace non-Latin1 chars
+                .collect();
+            Object::String(bytes, StringFormat::Literal)
+        }
+    }
 }

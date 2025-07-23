@@ -1,6 +1,7 @@
 mod utils;
 
 use crate::utils::*;
+use chrono::Local;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Stream};
@@ -617,7 +618,7 @@ impl Form {
             let inherited_da_str = field_dict
                 .get(b"DA")
                 .and_then(|obj| obj.as_str())
-                .map(|bytes| std::str::from_utf8(bytes).unwrap_or("/F1 12 Tf 0 g"))
+                .map(|bytes| str::from_utf8(bytes).unwrap_or("/F1 12 Tf 0 g"))
                 .unwrap_or("/F1 12 Tf 0 g");
 
             // Clone the /Kids array if present
@@ -654,7 +655,6 @@ impl Form {
     ) -> Result<(), lopdf::Error> {
         // Decode the PDF string value into plain text, fallback to empty if invalid
         let text = decode_pdf_string(value).unwrap_or_default();
-        let encoded = Object::string_literal(text.into_bytes());
 
         // Extract rectangle and default appearance (DA) string
         let rect;
@@ -683,7 +683,7 @@ impl Form {
                     .ok_or(lopdf::Error::DictKey("DA from parent".into()))?,
             }
             .as_str()
-            .map(|b| std::str::from_utf8(b).unwrap_or(inherited_da))
+            .map(|b| str::from_utf8(b).unwrap_or(inherited_da))
             .unwrap_or(inherited_da)
             .to_string();
         }
@@ -693,19 +693,29 @@ impl Form {
         let mut font_name = font.0.to_string();
         let mut font_size = font.1 as f32;
 
-        // Additionally parse font size from Tf operator if needed
-        for token in da_str.split_whitespace().collect::<Vec<_>>().windows(2) {
-            if token[1] == "Tf" {
-                font_name = token[0].to_string();
-                font_size = token[1].parse::<f32>().unwrap_or(12.0);
-            }
-        }
-
         // Compute text position and BBox size relative to (0,0)
         let width = (rect[2] - rect[0]).abs();
         let height = (rect[3] - rect[1]).abs();
         let x = 2.0;
         let y = 0.5 * height - 0.4 * font_size;
+
+        // Resolve actual base font and reference from page resources
+        let (resolved_name, font_ref) = self.resolve_font_from_da_name(&font_name, widget_id)?;
+        font_name = String::from_utf8_lossy(&resolved_name).to_string();
+
+        let widget = self.doc.objects.get(&widget_id).unwrap().as_dict()?;
+        let max_len = widget
+            .get(b"Parent")
+            .ok()
+            .and_then(|p| p.as_reference().ok())
+            .and_then(|pid| self.doc.objects.get(&pid))
+            .and_then(|parent| parent.as_dict().ok())
+            .and_then(|dict| dict.get(b"MaxLen").ok())
+            .and_then(|o| o.as_i64().ok())
+            .unwrap_or(0) as usize;
+
+        let font_encoding = get_font_encoding(&self.doc, font_ref);
+        let encoded = encode_text_for_pdf(&text, font_encoding.as_deref());
 
         // Build the appearance content stream
         let content = Content {
@@ -740,12 +750,15 @@ impl Form {
             ],
         };
 
-        // Ensure the font is registered in the document and get its ID
-        let font_ref = self.get_or_create_font(&font_name)?;
-        let font_resources: Dictionary =
-            [(font_name.as_bytes().to_vec(), Object::Reference(font_ref))]
-                .into_iter()
-                .collect();
+        // Build font resource with the correct name and ID
+        let mut font_resources = Dictionary::new();
+        font_resources.set(font_name.as_bytes().to_vec(), Object::Reference(font_ref));
+
+        // Ubuntu Document Viewer does this, but it should not be necessary.
+        let (helv_id, zadb_id) = Self::ensure_standard_fonts(&mut self.doc, None);
+        font_resources.set(b"Helv".to_vec(), Object::Reference(helv_id));
+        font_resources.set(b"ZaDb".to_vec(), Object::Reference(zadb_id));
+
         let resources: Dictionary = [(b"Font".to_vec(), Object::Dictionary(font_resources))]
             .into_iter()
             .collect();
@@ -781,6 +794,11 @@ impl Form {
             .as_dict_mut()
             .unwrap();
 
+        widget.set(b"AS", Object::Name(b"N".to_vec()));
+
+        let timestamp = format!("D:{}", Local::now().format("%Y%m%d%H%M%S+02'00'"));
+        widget.set(b"M", Object::string_literal(timestamp));
+
         let ap_dict = match widget.get_mut(b"AP") {
             Ok(Object::Dictionary(d)) => d,
             _ => {
@@ -794,37 +812,92 @@ impl Form {
         Ok(())
     }
 
-    fn get_or_create_font(&mut self, font_name: &str) -> Result<ObjectId, lopdf::Error> {
-        for (id, object) in &self.doc.objects {
-            if let Ok(dict) = object.as_dict() {
-                let type_is_font = match dict.get(b"Type") {
-                    Ok(Object::Name(n)) => n == b"Font",
-                    _ => false,
-                };
+    fn resolve_font_from_da_name(
+        &self,
+        da_font_name: &str,
+        widget_id: ObjectId,
+    ) -> Result<(Vec<u8>, ObjectId), lopdf::Error> {
+        // Try /DR from widget or parent
+        let get_dr_fonts = |dict: &Dictionary| {
+            dict.get(b"DR")
+                .and_then(|dr| dr.as_dict())
+                .and_then(|dr| dr.get(b"Font"))
+                .and_then(|f| f.as_dict())
+                .map(|fonts| {
+                    fonts
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_reference().unwrap()))
+                        .collect::<Vec<_>>()
+                })
+        };
 
-                let basefont_matches = match dict.get(b"BaseFont") {
-                    Ok(Object::Name(n)) => n == font_name.as_bytes(),
-                    _ => false,
-                };
+        let widget = self
+            .doc
+            .objects
+            .get(&widget_id)
+            .ok_or(lopdf::Error::Unimplemented(""))?
+            .as_dict()?;
 
-                if type_is_font && basefont_matches {
-                    return Ok(*id);
+        // Try /DR from widget
+        if let Ok(fonts) = get_dr_fonts(widget) {
+            if let Some((k, v)) = fonts
+                .iter()
+                .find(|(name, _)| name == da_font_name.as_bytes())
+            {
+                return Ok((k.clone(), *v));
+            }
+        }
+
+        // Try /Parent
+        if let Ok(parent_id) = widget.get(b"Parent").and_then(Object::as_reference) {
+            if let Some(parent) = self
+                .doc
+                .objects
+                .get(&parent_id)
+                .and_then(|obj| Object::as_dict(obj).ok())
+            {
+                if let Ok(fonts) = get_dr_fonts(parent) {
+                    if let Some((k, v)) = fonts
+                        .iter()
+                        .find(|(name, _)| name == da_font_name.as_bytes())
+                    {
+                        return Ok((k.clone(), *v));
+                    }
                 }
             }
         }
 
-        let font: Dictionary = [
-            (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
-            (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
-            (
-                b"BaseFont".to_vec(),
-                Object::Name(font_name.as_bytes().to_vec()),
-            ),
-        ]
-        .into_iter()
-        .collect();
+        // Try /AcroForm DR
+        let acroform_fonts = self
+            .doc
+            .catalog()?
+            .get(b"AcroForm")
+            .and_then(Object::as_reference)
+            .and_then(|id| {
+                self.doc
+                    .objects
+                    .get(&id)
+                    .ok_or(lopdf::Error::Unimplemented(""))
+            })
+            .and_then(Object::as_dict)
+            .and_then(|form| form.get(b"DR"))
+            .and_then(Object::as_dict)
+            .and_then(|dr| dr.get(b"Font"))
+            .and_then(Object::as_dict);
 
-        Ok(self.doc.add_object(Object::Dictionary(font)))
+        if let Ok(fonts) = acroform_fonts {
+            if let Some((k, v)) = fonts
+                .iter()
+                .find(|(name, _)| *name == da_font_name.as_bytes())
+            {
+                return Ok((k.clone(), v.as_reference()?));
+            }
+        }
+
+        Err(lopdf::Error::DictKey(format!(
+            "Font resource '{}' not found in DR",
+            da_font_name
+        )))
     }
 
     /// If the field at index `n` is a checkbox field, toggles the check box based on the value
@@ -917,6 +990,35 @@ impl Form {
             field.set("AS", state);
             Ok(())
         }
+    }
+
+    fn ensure_standard_fonts(
+        doc: &mut Document,
+        encoding_ref: Option<ObjectId>,
+    ) -> (ObjectId, ObjectId) {
+        // Helvetica ("Helv")
+        let mut helv_dict = Dictionary::from_iter([
+            (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
+            (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
+            (b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec())),
+            (b"Name".to_vec(), Object::Name(b"Helv".to_vec())),
+        ]);
+        if let Some(enc) = encoding_ref {
+            helv_dict.set("Encoding", Object::Reference(enc));
+        }
+
+        // ZapfDingbats ("ZaDb")
+        let zadb_dict = Dictionary::from_iter([
+            (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
+            (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
+            (b"BaseFont".to_vec(), Object::Name(b"ZapfDingbats".to_vec())),
+            (b"Name".to_vec(), Object::Name(b"ZaDb".to_vec())),
+        ]);
+
+        let helv_id = doc.add_object(Object::Dictionary(helv_dict));
+        let zadb_id = doc.add_object(Object::Dictionary(zadb_dict));
+
+        (helv_id, zadb_id)
     }
 
     /// If the field at index `n` is a radio field, toggles the radio button based on the value
@@ -1214,7 +1316,7 @@ impl Form {
                 }
             };
 
-            let ap_stream = lopdf::Stream::new(
+            let ap_stream = Stream::new(
                 dictionary! {
                     "Type" => "XObject",
                     "Subtype" => "Form",

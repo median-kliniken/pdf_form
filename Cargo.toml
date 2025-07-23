@@ -10,6 +10,7 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.9.1"
+chrono.workspace = true
 derive-error = "0.0.5"
 lopdf = "0.36.0"
 
