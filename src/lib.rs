@@ -593,7 +593,8 @@ impl Form {
                 field.set("V", encode_pdf_string(&s));
 
                 // Regenerate text appearance conforming the new text but ignore the result
-                let _ = self.regenerate_text_appearance_safe(n);
+                self.regenerate_text_appearance_safe(n)
+                    .expect("Failed to set the appearance stream");
 
                 Ok(())
             }
@@ -602,41 +603,97 @@ impl Form {
     }
 
     pub fn regenerate_text_appearance_safe(&mut self, n: usize) -> Result<(), lopdf::Error> {
-        // Step 0: extract field_id first
         let field_id = self.form_ids[n];
 
-        // Step 1: Get value + rect from field (needs mutable borrow)
-        let (value, rect, da_str) = {
-            let field = self
-                .doc
-                .objects
-                .get_mut(&field_id)
-                .unwrap()
-                .as_dict_mut()
-                .unwrap();
+        // Extract immutable data first to avoid borrow conflicts
+        let (value_obj, inherited_da_str, kids_array_opt) = {
+            let field_obj = self.doc.objects.get(&field_id).unwrap();
+            let field_dict = field_obj.as_dict().unwrap();
 
-            let value = field.get(b"V")?.clone();
-            let rect = field
+            // Clone the raw value object (to pass to rendering)
+            let value_obj = field_dict.get(b"V")?.clone();
+
+            // Decode the inherited default appearance (DA) string
+            let inherited_da_str = field_dict
+                .get(b"DA")
+                .and_then(|obj| obj.as_str())
+                .map(|bytes| std::str::from_utf8(bytes).unwrap_or("/F1 12 Tf 0 g"))
+                .unwrap_or("/F1 12 Tf 0 g");
+
+            // Clone the /Kids array if present
+            let kids_array_opt = field_dict.get(b"Kids").and_then(|o| o.as_array()).cloned();
+
+            (value_obj, inherited_da_str.to_string(), kids_array_opt)
+        };
+
+        // Set /NeedAppearances = false to indicate manual appearance generation
+        if let Ok(acroform_id) = self.doc.catalog()?.get(b"AcroForm")?.as_reference() {
+            if let Ok(acroform) = self.doc.get_object_mut(acroform_id)?.as_dict_mut() {
+                acroform.set(b"NeedAppearances", Object::Boolean(false));
+            }
+        }
+
+        // Regenerate appearance for each widget (kid), or fallback to field itself
+        if let Ok(kids_array) = kids_array_opt {
+            for kid in kids_array {
+                let kid_id = kid.as_reference()?;
+                self.regenerate_widget_appearance(kid_id, &value_obj, &inherited_da_str)?;
+            }
+        } else {
+            self.regenerate_widget_appearance(field_id, &value_obj, &inherited_da_str)?;
+        }
+
+        Ok(())
+    }
+
+    fn regenerate_widget_appearance(
+        &mut self,
+        widget_id: ObjectId,
+        value: &Object,
+        inherited_da: &str,
+    ) -> Result<(), lopdf::Error> {
+        // Decode the PDF string value into plain text, fallback to empty if invalid
+        let text = decode_pdf_string(value).unwrap_or_default();
+        let encoded = Object::string_literal(text.into_bytes());
+
+        // Extract rectangle and default appearance (DA) string
+        let rect;
+        let da_str;
+        {
+            let widget = self.doc.objects.get(&widget_id).unwrap().as_dict().unwrap();
+
+            // Extract bounding rectangle for the widget
+            rect = widget
                 .get(b"Rect")?
                 .as_array()?
                 .iter()
                 .map(|o| o.as_f32().unwrap_or(0.0))
                 .collect::<Vec<_>>();
-            let da_str = match field.get(b"DA") {
-                Ok(Object::String(bytes, _)) => {
-                    str::from_utf8(bytes).unwrap_or("/F1 12 Tf 0 g").to_string()
-                }
-                _ => "/F1 12 Tf 0 g".to_string(),
-            };
 
-            (value, rect, da_str)
-        };
+            // Try to get /DA from widget or fallback to parent or inherited
+            da_str = match widget.get(b"DA") {
+                Ok(da) => da,
+                Err(_) => widget
+                    .get(b"Parent")
+                    .ok()
+                    .and_then(|p| p.as_reference().ok())
+                    .and_then(|pid| self.doc.objects.get(&pid))
+                    .and_then(|parent| parent.as_dict().ok())
+                    .and_then(|dict| dict.get(b"DA").ok())
+                    .ok_or(lopdf::Error::DictKey("DA from parent".into()))?,
+            }
+            .as_str()
+            .map(|b| std::str::from_utf8(b).unwrap_or(inherited_da))
+            .unwrap_or(inherited_da)
+            .to_string();
+        }
 
-        // Step 2: Extract font info
+        // Parse font name and size from DA string
         let (font, font_color) = parse_font(Some(&da_str));
         let mut font_name = font.0.to_string();
         let mut font_size = font.1 as f32;
 
+        // Additionally parse font size from Tf operator if needed
         for token in da_str.split_whitespace().collect::<Vec<_>>().windows(2) {
             if token[1] == "Tf" {
                 font_name = token[0].to_string();
@@ -644,15 +701,13 @@ impl Form {
             }
         }
 
-        // Step 3: Create appearance stream
+        // Compute text position and BBox size relative to (0,0)
+        let width = (rect[2] - rect[0]).abs();
+        let height = (rect[3] - rect[1]).abs();
         let x = 2.0;
-        let dy = rect[1] - rect[3];
-        let y = if dy > 0.0 {
-            0.5 * dy - 0.4 * font_size
-        } else {
-            0.5 * font_size
-        };
+        let y = 0.5 * height - 0.4 * font_size;
 
+        // Build the appearance content stream
         let content = Content {
             operations: vec![
                 Operation::new("q", vec![]),
@@ -679,61 +734,63 @@ impl Form {
                     "Tm",
                     vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
                 ),
-                Operation::new("Tj", vec![value.clone()]),
+                Operation::new("Tj", vec![encoded]),
                 Operation::new("ET", vec![]),
                 Operation::new("Q", vec![]),
             ],
         };
 
-        // Step 4: Set NeedAppearances on AcroForm AFTER field borrow is done
-        let acroform_id = self.doc.catalog()?.get(b"AcroForm")?.as_reference()?;
-        let acroform = self.doc.get_object_mut(acroform_id)?.as_dict_mut()?;
-        acroform.set(b"NeedAppearances", Object::Boolean(false));
-
-        // Step 5: Set up /Resources and appearance stream
+        // Ensure the font is registered in the document and get its ID
         let font_ref = self.get_or_create_font(&font_name)?;
         let font_resources: Dictionary =
             [(font_name.as_bytes().to_vec(), Object::Reference(font_ref))]
                 .into_iter()
                 .collect();
-
         let resources: Dictionary = [(b"Font".to_vec(), Object::Dictionary(font_resources))]
             .into_iter()
             .collect();
 
+        // Build a new Form XObject stream with normalized BBox
         let stream_dict: Dictionary = [
             (b"Type".to_vec(), Object::Name(b"XObject".to_vec())),
             (b"Subtype".to_vec(), Object::Name(b"Form".to_vec())),
             (
                 b"BBox".to_vec(),
-                Object::Array(rect.iter().cloned().map(Object::Real).collect()),
+                Object::Array(vec![
+                    Object::Real(0.0),
+                    Object::Real(0.0),
+                    Object::Real(width),
+                    Object::Real(height),
+                ]),
             ),
             (b"Resources".to_vec(), Object::Dictionary(resources)),
         ]
         .into_iter()
         .collect();
 
+        // Add the stream to the document
         let new_stream = Stream::new(stream_dict, content.encode()?);
         let new_stream_id = self.doc.add_object(new_stream);
 
-        // Step 6: Mutably borrow field again to set /AP
-        let field = self
+        // Attach the new appearance stream to the widget annotation
+        let widget = self
             .doc
             .objects
-            .get_mut(&field_id)
+            .get_mut(&widget_id)
             .unwrap()
             .as_dict_mut()
             .unwrap();
 
-        let ap_dict = match field.get_mut(b"AP") {
+        let ap_dict = match widget.get_mut(b"AP") {
             Ok(Object::Dictionary(d)) => d,
             _ => {
-                field.set(b"AP", Object::Dictionary(Dictionary::new()));
-                field.get_mut(b"AP")?.as_dict_mut().unwrap()
+                widget.set(b"AP", Object::Dictionary(Dictionary::new()));
+                widget.get_mut(b"AP")?.as_dict_mut().unwrap()
             }
         };
 
         ap_dict.set(b"N", Object::Reference(new_stream_id));
+
         Ok(())
     }
 
