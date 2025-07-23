@@ -4,8 +4,8 @@ use crate::utils::*;
 use chrono::Local;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
+use lopdf::{dictionary, Stream};
 use lopdf::{Dictionary, Document, Object, ObjectId};
-use lopdf::{Stream, dictionary};
 use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::io::Write;
@@ -697,7 +697,6 @@ impl Form {
         let width = (rect[2] - rect[0]).abs();
         let height = (rect[3] - rect[1]).abs();
         let x = 2.0;
-        let y = 0.5 * height - 0.4 * font_size;
 
         // Resolve actual base font and reference from page resources
         let (resolved_name, font_ref) = self.resolve_font_from_da_name(&font_name, widget_id)?;
@@ -742,22 +741,42 @@ impl Form {
         ];
 
         // Approximate vertical offset for baseline alignment
+        let bbox_width = rect[2] - rect[0];
         let bbox_height = rect[3] - rect[1];
+
         let ascent = font_size * 0.8;
-        let line_height = font_size * 1.2;
-        let top_y = bbox_height;
+        let baseline_y = bbox_height - ascent;
 
-        for (i, line) in text.split('\n').enumerate() {
-            let y = top_y - ascent - (i as f32) * line_height;
+        if max_len > 0 {
+            let cell_width = bbox_width / (max_len as f32);
 
-            ops.push(Operation::new("Tm", vec![
-                1.into(), 0.into(), 0.into(), 1.into(),
-                x.into(), y.into(),
-            ]));
+            for (i, ch) in text.chars().take(max_len).enumerate() {
+                let center_x = (i as f32 + 0.5) * cell_width;
 
-            let encoded = encode_text_for_pdf(line, font_encoding.as_deref());
-            ops.push(Operation::new("Tj", vec![encoded]));
+                ops.push(Operation::new("Tm", vec![
+                    1.into(), 0.into(), 0.into(), 1.into(),
+                    center_x.into(), baseline_y.into(),
+                ]));
+
+                let encoded = encode_text_for_pdf(&ch.to_string(), font_encoding.as_deref());
+                ops.push(Operation::new("Tj", vec![encoded]));
+            }
+        } else {
+            // Fallback to normal multiline logic
+            let line_height = font_size * 1.2;
+            for (i, line) in text.split('\n').enumerate() {
+                let line_y = bbox_height - ascent - (i as f32) * line_height;
+
+                ops.push(Operation::new("Tm", vec![
+                    1.into(), 0.into(), 0.into(), 1.into(),
+                    x.into(), line_y.into(),
+                ]));
+
+                let encoded = encode_text_for_pdf(line, font_encoding.as_deref());
+                ops.push(Operation::new("Tj", vec![encoded]));
+            }
         }
+
 
         ops.extend([Operation::new("ET", vec![]), Operation::new("Q", vec![])]);
 
