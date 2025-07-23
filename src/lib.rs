@@ -692,12 +692,11 @@ impl Form {
         // Parse font name and size from DA string
         let (font, font_color) = parse_font(Some(&da_str));
         let mut font_name = font.0.to_string();
-        let mut font_size = font.1 as f32;
+        let font_size = font.1 as f32;
 
         // Compute text position and BBox size relative to (0,0)
         let width = (rect[2] - rect[0]).abs();
         let height = (rect[3] - rect[1]).abs();
-        let x = 2.0;
 
         // Resolve actual base font and reference from page resources
         let (resolved_name, font_ref) = self.resolve_font_from_da_name(&font_name, widget_id)?;

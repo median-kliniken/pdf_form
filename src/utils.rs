@@ -149,13 +149,6 @@ pub fn encode_pdf_string(value: &str) -> Object {
     encode_text_for_pdf(value, None)
 }
 
-pub fn escape_pdf_text(input: &str) -> String {
-    input
-        .replace("\\", "\\\\")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-}
-
 pub fn get_font_encoding(doc: &lopdf::Document, font_ref: ObjectId) -> Option<String> {
     let font_dict = doc.get_object(font_ref).ok()?.as_dict().ok()?;
     match font_dict.get(b"Encoding") {
