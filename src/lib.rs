@@ -7,6 +7,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Stream};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{HashSet, VecDeque};
+use std::fmt::Debug;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -714,7 +715,6 @@ impl Form {
             .unwrap_or(0) as usize;
 
         let font_encoding = get_font_encoding(&self.doc, font_ref);
-        let encoded = encode_text_for_pdf(&text, font_encoding.as_deref());
 
         // Build the appearance content stream
         let mut ops = vec![
@@ -1294,13 +1294,6 @@ impl Form {
             .ok_or_else(|| lopdf::Error::DictKey("field".into()))?
             .as_dict()?;
 
-        let value_obj = field.get(b"V")?.clone();
-        let value = match value_obj {
-            Object::String(ref bytes, _) => decode_pdf_string_from_bytes(bytes),
-            Object::Name(ref name) => decode_pdf_string_from_bytes(name),
-            _ => return Err(lopdf::Error::DictKey("V".into())),
-        };
-
         let kids = field.get(b"Kids").and_then(|o| o.as_array()).ok();
 
         let widget_ids = match kids {
@@ -1327,6 +1320,15 @@ impl Form {
             })
             .ok_or_else(|| lopdf::Error::DictKey("Missing font resource".into()))?;
 
+        let font_encoding = get_font_encoding(&self.doc, font_ref);
+
+        let value_obj = field.get(b"V")?.clone();
+        let value = match value_obj {
+            Object::String(ref bytes, _) => decode_pdf_string_from_bytes(bytes),
+            Object::Name(ref name) => decode_pdf_string_from_bytes(name),
+            _ => return Err(lopdf::Error::DictKey("V".into())),
+        };
+
         let da_string = field.get(b"DA")?.clone();
         for widget_id in widget_ids {
             let widget = self
@@ -1351,28 +1353,39 @@ impl Form {
 
             let font_size = 11.0;
 
-            let stream = format!(
-                "q BT /F1 {} Tf 0 g 2 {} Td ({}) Tj ET Q",
-                font_size,
-                (height / 2.0) - font_size / 2.0,
-                escape_pdf_text(&value.to_owned().unwrap_or_else(String::new))
-            );
+            let mut ops = vec![
+                Operation::new("q", vec![]),
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), font_size.into()]),
+                Operation::new("rg", vec![0.into(), 0.into(), 0.into()]), // black
+                Operation::new(
+                    "Td",
+                    vec![2.into(), ((height / 2.0) - font_size / 2.0).into()],
+                ),
+            ];
 
-            let resources = dictionary! {
-                "Font" => dictionary! {
-                    b"F1" => font_ref,
-                }
+            // Properly encoded text object (WinAnsi or UTF-16 w/ BOM)
+            let value = value.to_owned().unwrap_or_else(String::new);
+            let encoded = encode_text_for_pdf(&value, font_encoding.as_deref());
+            ops.push(Operation::new("Tj", vec![encoded]));
+
+            ops.extend([Operation::new("ET", vec![]), Operation::new("Q", vec![])]);
+
+            let content = Content { operations: ops };
+            let stream_bytes = content.encode()?;
+
+            let stream_dict = dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.0.into(), 0.0.into(), width.into(), height.into()],
+                "Resources" => dictionary! {
+                    "Font" => dictionary! {
+                        b"F1" => font_ref,
+                    }
+                },
             };
 
-            let ap_stream = Stream::new(
-                dictionary! {
-                    "Type" => "XObject",
-                    "Subtype" => "Form",
-                    "BBox" => vec![0.0.into(), 0.0.into(), width.into(), height.into()],
-                    "Resources" => Object::Dictionary(resources),
-                },
-                stream.as_bytes().to_vec(),
-            );
+            let ap_stream = Stream::new(stream_dict, stream_bytes);
 
             // Drop mutable borrow of `widget` before mutably accessing `self.doc.objects`
             let widget_id_for_set = widget_id;
