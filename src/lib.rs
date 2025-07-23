@@ -718,37 +718,58 @@ impl Form {
         let encoded = encode_text_for_pdf(&text, font_encoding.as_deref());
 
         // Build the appearance content stream
-        let content = Content {
-            operations: vec![
-                Operation::new("q", vec![]),
-                Operation::new("BT", vec![]),
-                Operation::new("Tf", vec![font_name.clone().into(), font_size.into()]),
-                Operation::new(
-                    font_color.0,
-                    match font_color.0 {
-                        "k" => vec![
-                            font_color.1.into(),
-                            font_color.2.into(),
-                            font_color.3.into(),
-                            font_color.4.into(),
-                        ],
-                        "rg" => vec![
-                            font_color.1.into(),
-                            font_color.2.into(),
-                            font_color.3.into(),
-                        ],
-                        _ => vec![font_color.1.into()],
-                    },
-                ),
-                Operation::new(
-                    "Tm",
-                    vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
-                ),
-                Operation::new("Tj", vec![encoded]),
-                Operation::new("ET", vec![]),
-                Operation::new("Q", vec![]),
-            ],
-        };
+        let mut ops = vec![
+            Operation::new("q", vec![]),
+            Operation::new("BT", vec![]),
+            Operation::new("Tf", vec![font_name.clone().into(), font_size.into()]),
+            Operation::new(
+                font_color.0,
+                match font_color.0 {
+                    "k" => vec![
+                        font_color.1.into(),
+                        font_color.2.into(),
+                        font_color.3.into(),
+                        font_color.4.into(),
+                    ],
+                    "rg" => vec![
+                        font_color.1.into(),
+                        font_color.2.into(),
+                        font_color.3.into(),
+                    ],
+                    _ => vec![font_color.1.into()],
+                },
+            ),
+        ];
+
+        // Approximate vertical offset for baseline alignment
+        let bbox_height = rect[3] - rect[1];
+        let top_y = bbox_height;
+        let ascent = font_size * 0.8;
+        let line_height = font_size * 1.2;
+
+        for (i, line) in text.split('\n').enumerate() {
+            // Position baseline of line i:
+            let baseline_y = top_y - ascent - (i as f32) * line_height;
+
+            let encoded_line = encode_text_for_pdf(line, font_encoding.as_deref());
+
+            ops.push(Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    x.into(),
+                    baseline_y.into(),
+                ],
+            ));
+            ops.push(Operation::new("Tj", vec![encoded_line]));
+        }
+
+        ops.extend([Operation::new("ET", vec![]), Operation::new("Q", vec![])]);
+
+        let content = Content { operations: ops };
 
         // Build font resource with the correct name and ID
         let mut font_resources = Dictionary::new();
