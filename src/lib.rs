@@ -1,16 +1,15 @@
 mod utils;
 
+use crate::utils::*;
 use derive_error::Error;
 use lopdf::content::{Content, Operation};
-use lopdf::dictionary;
+use lopdf::{dictionary, Stream};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::str;
-
-use crate::utils::*;
 
 /// A PDF Form that contains fillable fields
 ///
@@ -594,7 +593,7 @@ impl Form {
                 field.set("V", encode_pdf_string(&s));
 
                 // Regenerate text appearance conforming the new text but ignore the result
-                let _ = self.regenerate_text_appearance(n);
+                let _ = self.regenerate_text_appearance_safe(n);
 
                 Ok(())
             }
@@ -602,145 +601,173 @@ impl Form {
         }
     }
 
-    /// Regenerates the appearance for the field at index `n` due to an alteration of the
-    /// original TextField value, the AP will be updated accordingly.
-    ///
-    /// # Incomplete
-    /// This function is not exhaustive as not parse the original TextField orientation
-    /// or the text alignment and other kind of enrichments, also doesn't discover for
-    /// the global document DA.
-    ///
-    /// A more sophisticated parser is needed here
-    fn regenerate_text_appearance(&mut self, n: usize) -> Result<(), lopdf::Error> {
-        if let Ok(Object::Dictionary(acroform)) = self.doc.get_object_mut(self.form_ids[n]) {
-            acroform.set("NeedAppearances", Object::Boolean(true));
-            acroform.remove(b"AP");
+    pub fn regenerate_text_appearance_safe(&mut self, n: usize) -> Result<(), lopdf::Error> {
+        // Step 0: extract field_id first
+        let field_id = self.form_ids[n];
+
+        // Step 1: Get value + rect from field (needs mutable borrow)
+        let (value, rect, da_str) = {
+            let field = self
+                .doc
+                .objects
+                .get_mut(&field_id)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+
+            let value = field.get(b"V")?.clone();
+            let rect = field
+                .get(b"Rect")?
+                .as_array()?
+                .iter()
+                .map(|o| o.as_f32().unwrap_or(0.0))
+                .collect::<Vec<_>>();
+            let da_str = match field.get(b"DA") {
+                Ok(Object::String(bytes, _)) => {
+                    str::from_utf8(bytes).unwrap_or("/F1 12 Tf 0 g").to_string()
+                }
+                _ => "/F1 12 Tf 0 g".to_string(),
+            };
+
+            (value, rect, da_str)
+        };
+
+        // Step 2: Extract font info
+        let (font, font_color) = parse_font(Some(&da_str));
+        let mut font_name = font.0.to_string();
+        let mut font_size = font.1 as f32;
+
+        for token in da_str.split_whitespace().collect::<Vec<_>>().windows(2) {
+            if token[1] == "Tf" {
+                font_name = token[0].to_string();
+                font_size = token[1].parse::<f32>().unwrap_or(12.0);
+            }
         }
 
-        let field = {
-            self.doc
-                .objects
-                .get(&self.form_ids[n])
-                .unwrap()
-                .as_dict()
-                .unwrap()
-        };
-
-        // The value of the object (should be a string)
-        let value = field.get(b"V")?.to_owned();
-
-        // The default appearance of the object (should be a string)
-        let da = field.get(b"DA")?.to_owned();
-
-        // The default appearance of the object (should be a string)
-        let rect = field
-            .get(b"Rect")?
-            .as_array()?
-            .iter()
-            .map(|object| {
-                object
-                    .as_f32()
-                    .unwrap_or(object.as_i64().unwrap_or(0) as f32) as f32
-            })
-            .collect::<Vec<_>>();
-
-        // Gets the object stream
-        let object_id = field.get(b"AP")?.as_dict()?.get(b"N")?.as_reference()?;
-        let stream = self.doc.get_object_mut(object_id)?.as_stream_mut()?;
-
-        // Decode and get the content, even if is compressed
-        let mut content = {
-            if let Ok(content) = stream.decompressed_content() {
-                Content::decode(&content)?
-            } else {
-                Content::decode(&stream.content)?
-            }
-        };
-
-        // Ignored operators
-        let ignored_operators = vec![
-            "bt", "tc", "tw", "tz", "g", "tm", "tr", "tf", "tj", "et", "q", "bmc", "emc",
-        ];
-
-        // Remove these ignored operators as we have to generate the text and fonts again
-        content.operations.retain(|operation| {
-            !ignored_operators.contains(&operation.operator.to_lowercase().as_str())
-        });
-
-        // Let's construct the text widget
-        content.operations.append(&mut vec![
-            Operation::new("BMC", vec!["Tx".into()]),
-            Operation::new("q", vec![]),
-            Operation::new("BT", vec![]),
-        ]);
-
-        let font = parse_font(match da {
-            Object::String(ref bytes, _) => {
-                // cannot use decode_pdf_bytes due to lifetimes
-                Some(str::from_utf8(bytes).map_err(|_err| lopdf::Error::TextStringDecode)?)
-            }
-            _ => None,
-        });
-
-        // Define some helping font variables
-        let font_name = (font.0).0;
-        let font_size = (font.0).1;
-        let font_color = font.1;
-
-        // Set the font type and size and color
-        content.operations.append(&mut vec![
-            Operation::new("Tf", vec![font_name.into(), font_size.into()]),
-            Operation::new(
-                font_color.0,
-                match font_color.0 {
-                    "k" => vec![
-                        font_color.1.into(),
-                        font_color.2.into(),
-                        font_color.3.into(),
-                        font_color.4.into(),
-                    ],
-                    "rg" => vec![
-                        font_color.1.into(),
-                        font_color.2.into(),
-                        font_color.3.into(),
-                    ],
-                    _ => vec![font_color.1.into()],
-                },
-            ),
-        ]);
-
-        // Calcolate the text offset
-        let x = 2.0; // Suppose this fixed offset as we should have known the border here
-
-        // Formula picked up from Poppler
+        // Step 3: Create appearance stream
+        let x = 2.0;
         let dy = rect[1] - rect[3];
         let y = if dy > 0.0 {
-            0.5 * dy - 0.4 * font_size as f32
+            0.5 * dy - 0.4 * font_size
         } else {
-            0.5 * font_size as f32
+            0.5 * font_size
         };
 
-        // Set the text bounds, first are fixed at "1 0 0 1" and then the calculated x,y
-        content.operations.append(&mut vec![Operation::new(
-            "Tm",
-            vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
-        )]);
+        let content = Content {
+            operations: vec![
+                Operation::new("q", vec![]),
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec![font_name.clone().into(), font_size.into()]),
+                Operation::new(
+                    font_color.0,
+                    match font_color.0 {
+                        "k" => vec![
+                            font_color.1.into(),
+                            font_color.2.into(),
+                            font_color.3.into(),
+                            font_color.4.into(),
+                        ],
+                        "rg" => vec![
+                            font_color.1.into(),
+                            font_color.2.into(),
+                            font_color.3.into(),
+                        ],
+                        _ => vec![font_color.1.into()],
+                    },
+                ),
+                Operation::new(
+                    "Tm",
+                    vec![1.into(), 0.into(), 0.into(), 1.into(), x.into(), y.into()],
+                ),
+                Operation::new("Tj", vec![value.clone()]),
+                Operation::new("ET", vec![]),
+                Operation::new("Q", vec![]),
+            ],
+        };
 
-        // Set the text value and some finalizing operations
-        content.operations.append(&mut vec![
-            Operation::new("Tj", vec![value]),
-            Operation::new("ET", vec![]),
-            Operation::new("Q", vec![]),
-            Operation::new("EMC", vec![]),
-        ]);
+        // Step 4: Set NeedAppearances on AcroForm AFTER field borrow is done
+        let acroform_id = self.doc.catalog()?.get(b"AcroForm")?.as_reference()?;
+        let acroform = self.doc.get_object_mut(acroform_id)?.as_dict_mut()?;
+        acroform.set(b"NeedAppearances", Object::Boolean(false));
 
-        // Set the new content to the original stream and compress it
-        if let Ok(encoded_content) = content.encode() {
-            stream.set_plain_content(encoded_content);
-            let _ = stream.compress();
+        // Step 5: Set up /Resources and appearance stream
+        let font_ref = self.get_or_create_font(&font_name)?;
+        let font_resources: Dictionary =
+            [(font_name.as_bytes().to_vec(), Object::Reference(font_ref))]
+                .into_iter()
+                .collect();
+
+        let resources: Dictionary = [(b"Font".to_vec(), Object::Dictionary(font_resources))]
+            .into_iter()
+            .collect();
+
+        let stream_dict: Dictionary = [
+            (b"Type".to_vec(), Object::Name(b"XObject".to_vec())),
+            (b"Subtype".to_vec(), Object::Name(b"Form".to_vec())),
+            (
+                b"BBox".to_vec(),
+                Object::Array(rect.iter().cloned().map(Object::Real).collect()),
+            ),
+            (b"Resources".to_vec(), Object::Dictionary(resources)),
+        ]
+        .into_iter()
+        .collect();
+
+        let new_stream = Stream::new(stream_dict, content.encode()?);
+        let new_stream_id = self.doc.add_object(new_stream);
+
+        // Step 6: Mutably borrow field again to set /AP
+        let field = self
+            .doc
+            .objects
+            .get_mut(&field_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+
+        let ap_dict = match field.get_mut(b"AP") {
+            Ok(Object::Dictionary(d)) => d,
+            _ => {
+                field.set(b"AP", Object::Dictionary(Dictionary::new()));
+                field.get_mut(b"AP")?.as_dict_mut().unwrap()
+            }
+        };
+
+        ap_dict.set(b"N", Object::Reference(new_stream_id));
+        Ok(())
+    }
+
+    fn get_or_create_font(&mut self, font_name: &str) -> Result<ObjectId, lopdf::Error> {
+        for (id, object) in &self.doc.objects {
+            if let Ok(dict) = object.as_dict() {
+                let type_is_font = match dict.get(b"Type") {
+                    Ok(Object::Name(n)) => n == b"Font",
+                    _ => false,
+                };
+
+                let basefont_matches = match dict.get(b"BaseFont") {
+                    Ok(Object::Name(n)) => n == font_name.as_bytes(),
+                    _ => false,
+                };
+
+                if type_is_font && basefont_matches {
+                    return Ok(*id);
+                }
+            }
         }
 
-        Ok(())
+        let font: Dictionary = [
+            (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
+            (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
+            (
+                b"BaseFont".to_vec(),
+                Object::Name(font_name.as_bytes().to_vec()),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        Ok(self.doc.add_object(Object::Dictionary(font)))
     }
 
     /// If the field at index `n` is a checkbox field, toggles the check box based on the value
