@@ -183,7 +183,7 @@ impl Form {
                     }
 
                     // If this field has kids, they might have FT, so add them to the queue
-                    if let Ok(&Object::Array(ref kids)) = dict.get(b"Kids") {
+                    if let Ok(Object::Array(kids)) = dict.get(b"Kids") {
                         queue.append(&mut VecDeque::from(kids.clone()));
                     }
                 }
@@ -291,9 +291,9 @@ impl Form {
             FieldType::Button => FieldState::Button,
             FieldType::Radio => FieldState::Radio {
                 selected: match field.get(b"V") {
-                    Ok(name) => decode_pdf_string(name).unwrap_or_else(String::new),
+                    Ok(name) => decode_pdf_string(name).unwrap_or_default(),
                     _ => match field.get(b"AS") {
-                        Ok(name) => decode_pdf_string(name).unwrap_or_else(String::new),
+                        Ok(name) => decode_pdf_string(name).unwrap_or_default(),
                         _ => "".to_owned(),
                     },
                 },
@@ -323,7 +323,7 @@ impl Form {
                                                         .unwrap_or(false);
 
                                                     let value = decode_pdf_string_from_bytes(name)
-                                                        .unwrap_or_else(String::new);
+                                                        .unwrap_or_default();
                                                     choices.insert(value.clone());
                                                     checkboxes.push(SingleCheckboxState {
                                                         widget_id: kid_id,
@@ -369,7 +369,7 @@ impl Form {
                     selected: match field.get(b"V") {
                         Ok(selection) => match *selection {
                             Object::String(..) => {
-                                vec![decode_pdf_string(selection).unwrap_or_else(String::new)]
+                                vec![decode_pdf_string(selection).unwrap_or_default()]
                             }
                             Object::Array(ref chosen) => {
                                 let mut res = Vec::new();
@@ -386,15 +386,13 @@ impl Form {
                     },
                     // The options is an array of either text elements or arrays where the second
                     // element is what we want
-                    options: match self.find_opt_in_kids_or_parents(&field) {
-                        Some(&Object::Array(ref options)) => options
+                    options: match self.find_opt_in_kids_or_parents(field) {
+                        Some(Object::Array(options)) => options
                             .iter()
                             .map(|x| match *x {
-                                Object::String(..) => {
-                                    decode_pdf_string(x).unwrap_or_else(String::new)
-                                }
+                                Object::String(..) => decode_pdf_string(x).unwrap_or_default(),
                                 Object::Array(ref arr) => {
-                                    decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
+                                    decode_pdf_string(&arr[1]).unwrap_or_default()
                                 }
                                 _ => String::new(),
                             })
@@ -417,7 +415,7 @@ impl Form {
                 selected: match field.get(b"V") {
                     Ok(selection) => match *selection {
                         Object::String(..) => {
-                            vec![decode_pdf_string(selection).unwrap_or_else(String::new)]
+                            vec![decode_pdf_string(selection).unwrap_or_default()]
                         }
                         Object::Array(ref chosen) => {
                             let mut res = Vec::new();
@@ -434,14 +432,14 @@ impl Form {
                 },
                 // The options is an array of either text elements or arrays where the second
                 // element is what we want
-                options: match self.find_opt_in_kids_or_parents(&field) {
-                    Some(&Object::Array(ref options)) => options
+                options: match self.find_opt_in_kids_or_parents(field) {
+                    Some(Object::Array(options)) => options
                         .iter()
                         .map(|x| match *x {
-                            Object::String(..) => decode_pdf_string(x).unwrap_or_else(String::new),
+                            Object::String(..) => decode_pdf_string(x).unwrap_or_default(),
                             Object::Array(ref arr) => {
                                 if let Object::String(..) = &arr[1] {
-                                    decode_pdf_string(&arr[1]).unwrap_or_else(String::new)
+                                    decode_pdf_string(&arr[1]).unwrap_or_default()
                                 } else {
                                     String::new()
                                 }
@@ -463,7 +461,7 @@ impl Form {
             },
             FieldType::Text => FieldState::Text {
                 text: match field.get(b"V") {
-                    Ok(object) => decode_pdf_string(object).unwrap_or_else(String::new),
+                    Ok(object) => decode_pdf_string(object).unwrap_or_default(),
                     _ => "".to_owned(),
                 },
                 readonly: is_read_only(field),
@@ -929,8 +927,7 @@ impl Form {
         }
 
         Err(lopdf::Error::DictKey(format!(
-            "Font resource '{}' not found in DR",
-            da_font_name
+            "Font resource '{da_font_name}' not found in DR"
         )))
     }
 
@@ -956,7 +953,7 @@ impl Form {
             .and_then(|obj| obj.as_dict().ok())
             .and_then(|dict| dict.get(b"Kids").ok())
             .and_then(|o| o.as_array().ok())
-            .map(|arr| arr.clone());
+            .cloned();
 
         if let Some(kids) = kids {
             let mut matched = None;
@@ -1082,7 +1079,7 @@ impl Form {
                             _ => field.set(
                                 "V",
                                 Object::Array(
-                                    choices.iter().map(|x| encode_pdf_string(&x)).collect(),
+                                    choices.iter().map(|x| encode_pdf_string(x)).collect(),
                                 ),
                             ),
                         };
@@ -1148,20 +1145,16 @@ impl Form {
             .as_dict()
             .unwrap()
             .get(b"Kids");
-        if let Ok(&Object::Array(ref kids)) = kids_obj {
+        if let Ok(Object::Array(kids)) = kids_obj {
             for (i, kid) in kids.iter().enumerate() {
                 let mut found = false;
-                if let Ok(&Object::Dictionary(ref appearance_states)) =
+                if let Ok(Object::Dictionary(appearance_states)) =
                     kid.deref(&self.doc).unwrap().as_dict().unwrap().get(b"AP")
                 {
-                    if let Ok(&Object::Dictionary(ref normal_appearance)) =
-                        appearance_states.get(b"N")
-                    {
+                    if let Ok(Object::Dictionary(normal_appearance)) = appearance_states.get(b"N") {
                         for (key, _) in normal_appearance {
                             if key != b"Off" {
-                                res.push(
-                                    decode_pdf_string_from_bytes(key).unwrap_or_else(String::new),
-                                );
+                                res.push(decode_pdf_string_from_bytes(key).unwrap_or_default());
                                 found = true;
                                 break;
                             }
@@ -1269,7 +1262,7 @@ impl Form {
                 Object::Dictionary(d)
                     if d.get(b"Type")
                         .ok()
-                        .map_or(false, |t| t.as_name().ok() == Some(b"Font")) =>
+                        .is_some_and(|t| t.as_name().ok() == Some(b"Font")) =>
                 {
                     Some(*id)
                 }

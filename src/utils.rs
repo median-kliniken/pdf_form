@@ -59,7 +59,7 @@ pub fn get_on_value(field: &Dictionary) -> String {
                         if let Some(name) = decode_pdf_string_from_bytes(name) {
                             // TODO: Fix this
                             if name != "Off" && option.is_none() {
-                                option = Some(name.into());
+                                option = Some(name);
                             }
                         }
                     }
