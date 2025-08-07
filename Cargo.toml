@@ -1,6 +1,6 @@
 [package]
 name = "pdf_form"
-version = "0.4.1"
+version = "0.4.0"
 authors = [
   "Markus Mayer <markus.mayer@median-kliniken.de>",
   "Jake <jsandler18@gmail.com>",
