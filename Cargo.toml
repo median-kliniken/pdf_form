@@ -2,10 +2,10 @@
 name = "pdf_form"
 version = "0.4.0"
 authors = [
-  "Markus Mayer <markus.mayer@median-kliniken.de>",
-  "Jake <jsandler18@gmail.com>",
-  "Malte <voos.malte@gmail.com>",
-  "Emulator000 <emulator@hotmail.it>",
+    "Markus Mayer <markus.mayer@median-kliniken.de>",
+    "Jake <jsandler18@gmail.com>",
+    "Malte <voos.malte@gmail.com>",
+    "Emulator000 <emulator@hotmail.it>",
 ]
 repository = "https://github.com/median-kliniken/pdf_form"
 homepage = "https://github.com/median-kliniken/pdf_form"
